@@ -1,0 +1,779 @@
+// GTAG
+var rwmpVars = {
+        adInProgress : false,
+        hasAd : false,
+        currentIndex: 0,
+        adIndex : 0,
+        forcePlay : false,
+        finalPlaylist : [],
+        globalVast : false,
+        yknytmzg : false,
+        autoplayLunched : false,
+        retargetingImpression : {},
+        retargetingClick : {},
+    }
+
+var paywallEvent = new Event('EdisoundPaywallEvent');
+
+
+// Start: isolation du code
+;(function(window, rwmpVars, undefined) {
+        const rwmp_ua = window.navigator.userAgent;
+
+    const vastClient = new VAST.VASTClient();
+    let vastTracker;
+
+    const displayReduced =
+        false
+    ;
+
+    let consentString = (typeof(Didomi) != 'undefined' && typeof Didomi.getUserStatus === "function")? Didomi.getUserStatus()['consent_string'] : readCookies('euconsent-v2');
+    const rwmpLoadPlayer = (sponsorizedMedias) => {
+// -----------------------------START rwmpLoadPlayer() --------------------------------------
+        // Gestion de l'autoplay
+        let autoplay = false;
+
+        if( typeof( sponsorizedMedias[0] ) != 'undefined' ) {
+            rwmpVars.hasAd = true;
+            if( typeof( sponsorizedMedias[0].autoplay ) != 'undefined' )
+                autoplay = sponsorizedMedias[0].autoplay;
+        }
+
+        let rwm_trunk_editor_duration = 5, rwm_trunk_editor_duration_init = 5;
+        let rwm_trunk_sponso_duration = 1, rwm_trunk_sponso_duration_init = 1;
+        let rwm_trunk_step_duration = 61;
+        var lastListenedRwmId = null;
+        var lastLlistenedRest = 0;
+
+        // Fonction appelée à chaque seconde de lecture
+        const mfwOnPlaying = (metadata, playedSeconds) => {
+            let isPaid = (metadata.paid !== 'undefined' && metadata.paid === 1);
+            let rwmId = metadata.rwm_episode_id;
+            let listenId = metadata.listen_id;
+            let listenKey = metadata.listen_key;
+            let rwm_duration = (isPaid) ? rwm_trunk_sponso_duration : rwm_trunk_editor_duration;
+
+            if( lastListenedRwmId === rwmId ) {
+                if( (Math.floor(playedSeconds) % rwm_duration) === 0 && !rwmpVars.adInProgress) { // pour réduire le travail
+                    let rest = Math.floor(playedSeconds / rwm_duration);
+                    //console.log( 'modulo : ' + modulo + ' - rest : ' + rest + ' - rest : ' + lastLlistenedRest );
+                    if( rest === (lastLlistenedRest +1) ) {
+                        let data = {listen_id: listenId, listen_key: listenKey, asset_id: rwmId, seconds: Math.floor(playedSeconds), autoplay: autoplay, uuid: '1ec19f46\u002Dce07\u002D6960\u002Db77e\u002D5fa87749e5b3', isFront: false };
+
+                        fetch('https\u003A\/\/publishers.edisound.com\/api\/p\/medias\/stats', {
+                            method: "POST",
+                            referrerPolicy: "no-referrer-when-downgrade",
+                            body: JSON.stringify(data),
+                            headers: new Headers({"Content-Type": "text/plain"})
+                        }).then(r => null);
+                    }
+                    lastLlistenedRest = rest;
+
+                    // toutes les secondes avant la 1ere minute, puis toutes les 5 secondes
+                    rwm_trunk_editor_duration = ( !isPaid && Math.floor(playedSeconds) >= rwm_trunk_step_duration ) ? 5 : rwm_trunk_editor_duration_init;
+                    rwm_trunk_sponso_duration = ( isPaid && Math.floor(playedSeconds) >= rwm_trunk_step_duration ) ? 5 : rwm_trunk_sponso_duration_init;
+                }
+
+                if (rwmpVars.adInProgress) {
+                    vastTracker.setProgress(playedSeconds);
+                    if (rwmpVars.yknytmzg === true) {
+
+                        if ( !rwmpVars.vastTrackerComplete && playedSeconds > (Amplitude.getSongDuration() / 6) ) {
+                            vastTracker.track('complete');
+                            rwmpVars.vastTrackerComplete = true;
+                        }
+                    }
+                    else
+                    {
+                        if (Math.floor(Amplitude.getSongPlayedPercentage()) === '0') {
+                            vastTracker.setDuration(Amplitude.getSongDuration())
+                        }
+                    }
+                }
+
+                if (isPaid && rwmpVars.retargetingClick && playedSeconds > rwmpVars.retargetingClick.duration) {
+                    var pxRetargetingX = document.createElement("img");
+                    pxRetargetingX.src = rwmpVars.retargetingClick.src;
+                    pxRetargetingX.width = rwmpVars.retargetingClick.width;
+                    pxRetargetingX.height = rwmpVars.retargetingClick.height;
+                    document.body.appendChild(pxRetargetingX);
+                    rwmpVars.retargetingClick = null;
+                }
+            }
+            else{
+                lastLlistenedRest = 0;
+                lastListenedRwmId = rwmId;
+            }
+        };
+
+        // mix sponsorizedMedias with rwmpSongs
+        console.log('sponsorizedMedias', sponsorizedMedias);
+        console.log('rwmpSongs', rwmpSongs);
+
+        const sortType = 'each_n';
+        const sortTypeEachNumber = 1;
+        switch(sortType) {
+            case 'each_n':
+                for (let i = 0; i < rwmpSongs.length; i++) {
+                    if( sponsorizedMedias.length > 0 && ( i % sortTypeEachNumber ) === 0 ) {
+                        rwmpVars.finalPlaylist.push(sponsorizedMedias.shift());
+                    }
+                    rwmpVars.finalPlaylist.push(rwmpSongs[i]);
+                }
+                if( sponsorizedMedias.length > 0 && (i % sortTypeEachNumber) === 0 ) {
+                    rwmpVars.finalPlaylist.push(sponsorizedMedias.shift());
+                }
+                break;
+        }
+                if(rwmpSongs.length === 0 && sponsorizedMedias.length > 0) {
+            rwmpVars.finalPlaylist.push(sponsorizedMedias.shift());
+        }
+
+        console.log('finalPlaylist', rwmpVars.finalPlaylist);
+
+        let cssList = [];
+
+                    // Skin
+            cssList.push('https\u003A\/\/publishers.edisound.com\/player\/skin\/1ed14c0d\u002D2775\u002D6610\u002D8111\u002D352182f98aa0');
+                        cssList.push('https://publishers.edisound.com/build/4681.240bbb3c.css');
+                            if (displayReduced) {
+            cssList.push('https://publishers.edisound.com/build/player-format-reduced.d75bae01.css');
+        }
+
+        for (const css of cssList) {
+            let link = document.createElement('link');
+            link.href = css;
+            link.type = "text/css"; link.rel = "stylesheet"; link.media = "screen,print";
+            document.getElementsByTagName('head')[0].appendChild(link);
+        }
+
+        // insérer le html du player
+                rwmpContainerEl.innerHTML = rwmp_htmlTemplate;
+        
+        // insérer le html du player reduced
+        let rwmpReducedContainerEl = null;
+        if (displayReduced) {
+            if (document.querySelector('div.player-reduced') == null) {
+                rwmpReducedContainerEl = document.createElement("div");
+                rwmpReducedContainerEl.classList.add("player-reduced");
+                rwmpReducedContainerEl.innerHTML = rwmp_reduced_htmlTemplate;
+                document.body.appendChild(rwmpReducedContainerEl); //document.getElementsByTagName('body')[0].appendChild(rwmpReducedContainerEl);
+            }
+            else {
+                rwmpReducedContainerEl = document.querySelector('div.player-reduced');
+            }
+                    }
+
+        // compléter le html du player avec la playlist
+        const rwmpPlaylistContainerEl = ( rwmpContainerEl != null) ? rwmpContainerEl.querySelector('#amplitude-playlist.amplitude-playlist') : null;
+        const rwmpPlaylistContainerRdcdEl = ( rwmpReducedContainerEl != null ) ? rwmpReducedContainerEl.querySelector('#amplitude-playlist.amplitude-playlist.extras-playlist') : null;
+
+        if(rwmpPlaylistContainerEl || rwmpPlaylistContainerRdcdEl) {
+
+                        // On rebuild uniquement s'il y a de la pub
+            if (rwmpVars.hasAd) {
+                rwmpPlaylistContainerEl.innerHTML = '';
+                if(rwmpPlaylistContainerRdcdEl) {
+                    rwmpPlaylistContainerRdcdEl.innerHTML = '';
+                }
+
+                for (let i = 0; i < rwmpVars.finalPlaylist.length; i++) {
+                    let playlistItemEl = document.createElement("div");
+                    playlistItemEl.setAttribute('data-amplitude-song-index', i);
+                    playlistItemEl.setAttribute('class', 'song amplitude-song-container amplitude-play-pause cc3');
+                    const minutes = Math.floor(rwmpVars.finalPlaylist[i].metadata.duration / 60);
+                    const seconds = Math.floor(rwmpVars.finalPlaylist[i].metadata.duration % 60);
+
+                                        playlistItemEl.innerHTML = `
+                     <div class="song-now-playing-icon-container cbc3">
+                                                <svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg">
+                           <path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/>
+                        </svg>
+                        <svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg">
+                           <g fill="none" fill-rule="evenodd">
+                              <path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/>
+                           </g>
+                        </svg>
+                     </div>
+                     <div class="song-meta-data">
+                        <span title="${rwmpVars.finalPlaylist[i].name.replace('"', '\"')}" class="song-title">${rwmpVars.finalPlaylist[i].name}</span>
+                        <span class="song-duration cc3">${minutes >= 10 ? minutes : '0'+minutes}:${seconds >= 10 ? seconds : '0'+seconds}</span>                     </div>`;
+                                        rwmpPlaylistContainerEl.appendChild(playlistItemEl);
+
+                    if(rwmpPlaylistContainerRdcdEl) {
+                        let playlistRdcdItemEl = playlistItemEl.cloneNode(true);
+                        rwmpPlaylistContainerRdcdEl.appendChild(playlistRdcdItemEl);
+                    }
+                }
+            }
+                    }
+
+        let startAt = 0;
+
+        
+        // Add CSS and AMPLITUDEJS
+        var init_conf = {
+            "continue_next": true,
+            "debug": false,
+            "preload": "none",
+            "songs": rwmpVars.finalPlaylist,
+                    "start_song": startAt,
+            "callbacks": {
+                "play": function() {
+                    checkPaywall();
+                    updatenotification();
+
+                    let metadata = Amplitude.getActiveSongMetadata();
+
+                    let topRightEl = rwmpContainerEl.querySelector('div#player-top-right');
+                    let msgEl = rwmpContainerEl.querySelector('div#player-top-right .msg');
+
+                    if(topRightEl != null && msgEl != null) {
+                        if('paid' in metadata) {
+                            topRightEl.classList.add("msg-active");
+                        } else {
+                            topRightEl.classList.remove("msg-active");
+                        }
+                    }
+
+                    var preroll_url = false;
+                    if (typeof(metadata.preroll_url) != 'undefined')
+                        preroll_url = metadata.preroll_url;
+                    else if (rwmpVars.globalVast !== false)
+                        preroll_url = rwmpVars.globalVast;
+
+                    if (!rwmpVars.adInProgress && !rwmpVars.forcePlay && preroll_url) {
+                        rwmpVars.currentIndex = Amplitude.getActiveIndex();
+
+                        console.log('Calling VAST url : ' + preroll_url);
+                        vastClient.get(preroll_url).then(res => {
+                            if (res.ads.length) {
+                                vastTracker = new VAST.VASTTracker(vastClient,
+                                    res.ads[0],
+                                    res.ads[0].creatives[0]);
+                                vastTracker.trackImpression();
+
+                                if (rwmpVars.yknytmzg === true) {
+                                    vastTracker.setDuration(res.ads[0].creatives[0].duration / 6);
+                                }
+
+                                rwmpVars.vastTrackerComplete = false;
+                                rwmpVars.adInProgress = true;
+
+
+                                                                rwmpVars.adIndex = Amplitude.addSong({"yknytmzg": rwmpVars.yknytmzg, "url": res.ads[0].creatives[0]['mediaFiles'][0].fileURL, 'cover_art_url': 'https\u003A\/\/publishers.edisound.com\/images\/picto\u002Dad.jpg'});
+                                Amplitude.bindNewElements();
+                                Amplitude.playSongAtIndex(rwmpVars.adIndex);
+                                Amplitude.removeSong(rwmpVars.adIndex);
+                                                                Amplitude.bindNewElements();
+
+                                document.querySelectorAll('.amplitude-song-slider').forEach(function (element) {
+                                    element.style.cursor = "default";
+                                    element.disabled = 'disabled';
+                                });
+                            }
+                        })
+                    }
+                    else {
+                        rwmpVars.forcePlay = true;
+                    }
+                },
+                "initialized": function() {
+                    if ( autoplay ) {
+                        Amplitude.pause();
+                        const podcastAutoplayRetryMax = 10;
+                        const podcastAutoplayRetryInterval = setInterval(podcastPlay, 1500);
+                        let podcastAutoplayRetry = 1;
+                        function podcastPlay() {
+                            if (rwmpVars.autoplayLunched === true) {
+                                return;
+                            }
+                            var playButton = rwmpContainerEl.querySelector('.back');
+                            var playButton2 = rwmpContainerEl.querySelector('.amplitude-play-pause');
+                            if (playButton !== null && Amplitude.getPlayerState() !== "playing") {
+                                playButton.click();
+                                playButton2.click();
+                                if( Amplitude.getPlayerState() === "playing" || podcastAutoplayRetry >= podcastAutoplayRetryMax) {
+                                    rwmpVars.autoplayLunched = true;
+
+                                    clearInterval(podcastAutoplayRetryInterval);
+                                }
+                                podcastAutoplayRetry++;
+                            }
+                        }
+                    }
+                },
+                "song_change": function() {
+                    Amplitude.setVolume(Amplitude.getVolume()); // bug amplitude https://trello.com/c/Gpc4aA8O
+                    updatenotification();
+                    if(!rwmpVars.adInProgress) {
+                        document.querySelectorAll('.amplitude-song-slider').forEach(function (element) {
+                            element.style = false;
+                            element.disabled = false;
+                        });
+                    }
+                },
+                "timeupdate": () => {
+                                        mfwOnPlaying(Amplitude.getActiveSongMetadata(), Amplitude.getSongPlayedSeconds());
+                                        checkPaywall();
+                },
+                "ended": function() {
+                    if (rwmpVars.adInProgress) {
+
+                        rwmpVars.adInProgress = false;
+
+                                                Amplitude.removeSong( rwmpVars.adIndex );
+                        Amplitude.playSongAtIndex( rwmpVars.currentIndex );
+                                                Amplitude.bindNewElements();
+                        rwmpVars.forcePlay = true;
+
+                        if (Amplitude.getPlayerState() == 'playing') {
+                            document.querySelectorAll('div.amplitude-play-pause').forEach(function (element) {
+                                element.classList.add("amplitude-playing");
+                                element.classList.remove("amplitude-paused");
+                            });
+                        }
+
+                        //vastTracker.track('complete');
+                    }
+                }
+            }
+        };
+
+        // 4 > Initializes AmplitudeJS
+        //Amplitude.removeSong( 0 );
+        Amplitude.init(init_conf);
+        //Amplitude.pause();
+
+        // chargement pastille "sponsorisé"" si 1er élément de type podcast pub
+        if (rwmpContainerEl) {
+            let topRightEl = rwmpContainerEl.querySelector('.rwm-podcast-player div#player-top-right');
+            let msgEl = rwmpContainerEl.querySelector('.rwm-podcast-player div#player-top-right .msg');
+            if(topRightEl && msgEl) {
+                if('paid' in Amplitude.getActiveSongMetadata()) {
+                    topRightEl.classList.add("msg-active");
+                } else {
+                    topRightEl.classList.remove("msg-active");
+                }
+            }
+
+            if (typeof rwmpVars.finalPlaylist[0] != 'undefined' && typeof rwmpVars.finalPlaylist[0].metadata.duration != 'undefined') {
+                const minutes = Math.floor(rwmpVars.finalPlaylist[0].metadata.duration / 60);
+                const seconds = Math.floor(rwmpVars.finalPlaylist[0].metadata.duration % 60);
+
+                rwmpContainerEl.querySelectorAll('.amplitude-duration-minutes').forEach(function (element) {
+                    element.innerHTML = `${minutes >= 10 ? minutes : '0'+minutes}`;
+                });
+                rwmpContainerEl.querySelectorAll('.amplitude-duration-seconds').forEach(function (element) {
+                    element.innerHTML = `${seconds >= 10 ? seconds : '0'+seconds}`;
+                });
+
+                if (displayReduced) {
+                    rwmpReducedContainerEl.querySelector('.amplitude-duration-minutes').innerHTML = `${minutes >= 10 ? minutes : '0'+minutes}`;
+                    rwmpReducedContainerEl.querySelector('.amplitude-duration-seconds').innerHTML = `${seconds >= 10 ? seconds : '0'+seconds}`;
+                }
+            }
+        }
+
+        // 5 > code pour share button <!--div class="wrapper-social-share-bar"-->
+        const rwmpShareButtonEls = document.querySelectorAll('.rwmp-share');  // colonne de droite
+        if(rwmpShareButtonEls.length !== 0) {
+            const rwmpShareContainerEl = document.createElement('div');
+            rwmpShareContainerEl.classList.add('rwm-podcast-player__share');
+            rwmpShareContainerEl.style.display = 'none';
+            rwmpShareContainerEl.innerHTML = rwmp_share_htmlTemplate;
+            document.body.appendChild(rwmpShareContainerEl);
+
+            let rwmpShareButtons = rwmpShareContainerEl.querySelectorAll('a');
+            for (const button of rwmpShareButtons) {
+                button.addEventListener('click', (e) => {
+                    let buttonEl = e.currentTarget;
+                    let shareType = buttonEl.getAttribute('data-share-type');
+                    let shareUrl = Amplitude.getActiveSongMetadata().frontpage;
+                    let shareTitle = Amplitude.getActiveSongMetadata().name;
+                    let openUrl = '';
+                    let popup = (url, title, w, h) => {
+                        let left = (screen.width/2)-(w/2), top = (screen.height/2)-(h/2);
+                        return window.open(url, title, 'toolbar=no, location=no, directories=no, status=no, menubar=no, scrollbars=no, resizable=no, copyhistory=no, width='+w+', height='+h+', top='+top+', left='+left);
+                    };
+                    switch (shareType) {
+                        case 'facebook':
+                            let shareUrlFacebook = shareUrl;
+                            openUrl = 'https://www.facebook.com/sharer/sharer.php?u=' + shareUrlFacebook;
+                            popup(openUrl, shareTitle, 600, 600);
+                            break;
+                        case 'twitter':
+                            let shareUrlTwitter = shareUrl;
+                            openUrl = 'http://twitter.com/share?text=' + encodeURIComponent(shareTitle) + '&url=' + shareUrlTwitter;
+                            popup(openUrl, shareTitle, 600, 600);
+                            break;
+                        case 'linkedin':
+                            let shareUrlLinkedin = shareUrl;
+                            let getMeta = (metaName) => {
+                                const metas = document.getElementsByTagName('meta');
+                                for (let i = 0; i < metas.length; i++) {
+                                    if (metas[i].getAttribute('name') === metaName) {
+                                        return metas[i].getAttribute('content');
+                                    }
+                                }
+                                return '';
+                            }
+                            let abstract = Amplitude.getActiveSongMetadata().description;
+                            openUrl = 'https://www.linkedin.com/sharing/share-offsite/?mini=true&url=' + encodeURIComponent(shareUrlLinkedin) + '&title=' + encodeURIComponent(shareTitle) + '&summary=' + encodeURIComponent(abstract);
+                            popup(openUrl, shareTitle, 600, 600);
+                            break;
+                        case 'copy-link':
+                            const el = document.createElement('textarea');
+                            el.value = shareUrl;
+                            document.body.appendChild(el);
+                            el.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(el);
+                            // https://www.w3schools.com/howto/howto_js_popup.asp
+                            let popinCopyLink = document.getElementById("rwmp__share__copy-link-popin");
+                            popinCopyLink.classList.toggle("show");
+                            setTimeout(function() {
+                                let popinCopyLink = document.getElementById("rwmp__share__copy-link-popin");
+                                popinCopyLink.classList.toggle("show");
+                            }, 2500);
+                            break;
+                        case 'email':
+                            window.location.href = "mailto:mail@example.org?body=" + encodeURIComponent(shareUrl);
+                            break;
+                    }
+                });
+            }
+            rwmpShareButtonEls.forEach((rwmpShareButtonEl) => {
+                rwmpShareButtonEl.addEventListener('click', function( e ) {
+                    let shareContainerEl = document.querySelector('.rwm-podcast-player__share');
+                    shareContainerEl.style.display = 'block';
+                    shareContainerEl.style.top = e.clientY + 'px';
+                    shareContainerEl.style.left = e.clientX - rwmpShareContainerEl.offsetWidth + 'px';
+                    let closeEl = document.querySelector('.rwmp__share-menu-item--close');
+                    closeEl.addEventListener('click', function( e ) {
+                        let shareContainerEl = document.querySelector('.rwm-podcast-player__share');
+                        rwmpShareContainerEl.style.display = 'none';
+                    }, false);
+                }, false);
+            });
+        }
+
+        
+        // Global Events
+        const podcastPlayer = rwmpContainerEl.querySelector("#amplitude-player");
+        const reducedPlayer = document.querySelector(".player-reduced");
+        let subscribeButton = document.querySelectorAll('.subscribe')
+        let downloadButton = document.querySelectorAll('.download');
+        let backwardButtons = document.querySelectorAll('.back');
+        let forwardButtons = document.querySelectorAll('.forward');
+        let prevButtons = document.querySelectorAll('.rwm-prev');
+        let nextButtons = document.querySelectorAll('.rwm-next');
+        let playlistSongs = document.querySelectorAll('.amplitude-playlist');
+
+        const skipSeconds = seconds => {
+            const duration = Amplitude.getSongDuration()
+            const currentTime = parseFloat(Amplitude.getSongPlayedSeconds())
+            const targetTime = parseFloat(currentTime + seconds)
+            Amplitude.setSongPlayedPercentage((targetTime / duration) * 100)
+        }
+
+                if ("IntersectionObserver" in window) {
+            const observerPlayer = new IntersectionObserver(entries => {
+                entries.map(entry => {
+                    let shareContainerEl = document.querySelector('.rwm-podcast-player__share');
+                    if(entry.isIntersecting) {
+                        if (displayReduced) reducedPlayer.classList.remove('visible');
+                        if (shareContainerEl) shareContainerEl.style.display = 'none';
+                    }
+                    else{
+                        if (displayReduced) {
+                            reducedPlayer.classList.add('visible');
+                        }
+                        if (shareContainerEl) shareContainerEl.style.display = 'none';
+                    }
+                })
+            }, {
+                rootMargin: '0px 0px 0px 0px'
+            });
+            observerPlayer.observe(podcastPlayer);
+        }
+        
+        if (downloadButton != null) {
+            for( var i = 0; i < downloadButton.length; i++ ) {
+                downloadButton[i].addEventListener('click', function(e) {
+                    e.preventDefault();
+                    let metadata = Amplitude.getActiveSongMetadata();
+
+                    if (metadata.paid) {
+                        window.open(Amplitude.getActiveSongMetadata().url, '_blank');
+                    }
+                    else {
+                        window.open(Amplitude.getActiveSongMetadata().download_url, '_blank');
+                    }
+
+                    if (metadata.listen_id !== undefined) {
+                        let data = {listen_id: metadata.listen_id, listen_key: metadata.listen_key, asset_id: metadata.rwm_episode_id, event: 'download'};
+                        fetch('https\u003A\/\/publishers.edisound.com\/api\/p\/events', {
+                            method: "POST",
+                            body: JSON.stringify(data),
+                            headers: new Headers({"Content-Type": "application/json"})
+                        }).then(r => null);
+                    }
+                });
+            }
+        }
+
+        if (subscribeButton != null) {
+            for( var i = 0; i < subscribeButton.length; i++ ) {
+                subscribeButton[i].addEventListener('click', function(e) {
+                    let metadata = Amplitude.getActiveSongMetadata();
+
+                    if (metadata.paid && !metadata.frontpage) {
+                        return false;
+                    }
+                    if (metadata.paid !== undefined) {
+                        let data = {listen_id: metadata.listen_id, event: 'subscribe'};
+                        fetch('https\u003A\/\/publishers.edisound.com\/api\/p\/events', {
+                            method: "POST",
+                            body: JSON.stringify(data),
+                            headers: new Headers({"Content-Type": "application/json"})
+                        }).then(r => null);
+                    }
+
+                    window.open(metadata.frontpage, '_blank');
+                });
+            }
+        }
+
+        if (backwardButtons != null) {
+            for( var i = 0; i < backwardButtons.length; i++ ) {
+                backwardButtons[i].addEventListener('click', function(e) {
+                    if (rwmpVars.adInProgress === false)
+                        skipSeconds(-10);
+                });
+            }
+        }
+
+        if (forwardButtons != null) {
+            for( var i = 0; i < forwardButtons.length; i++ ) {
+                forwardButtons[i].addEventListener('click', function(e) {
+                    if (rwmpVars.adInProgress === false)
+                        skipSeconds(+10);
+                });
+            }
+        }
+
+        if (prevButtons != null) {
+            for( var i = 0; i < prevButtons.length; i++ ) {
+                prevButtons[i].addEventListener('click', function(e) {
+                    if (rwmpVars.adInProgress === false) Amplitude.prev();
+                });
+            }
+        }
+
+        if (nextButtons != null) {
+            for( var i = 0; i < nextButtons.length; i++ ) {
+                nextButtons[i].addEventListener('click', function(e) {
+                    if (rwmpVars.adInProgress === false) Amplitude.next();
+                });
+            }
+        }
+
+        playlistSongs.forEach(item => {
+            item.addEventListener("click", (e) => {
+                if (rwmpVars.adInProgress) {
+                    e.stopPropagation();
+                }
+            }, true);
+        })
+
+        if (displayReduced) {
+            // player reduced code
+            const actionsButton = reducedPlayer.querySelector(".amplitude-actions");
+            const divExtrasActions = reducedPlayer.querySelector(".extras-actions");
+            const playlistButton = reducedPlayer.querySelector(".extras-buttons.button-playlist");
+            const divExtrasPlaylist = reducedPlayer.querySelector(".extras-playlist");
+            const expandButton = reducedPlayer.querySelector(".amplitude-expand");
+
+            actionsButton.addEventListener('click', function() {
+                if(divExtrasActions != null) divExtrasActions.classList.toggle('visible');
+                if(actionsButton != null) actionsButton.classList.toggle('active');
+                if(divExtrasPlaylist != null) divExtrasPlaylist.classList.remove('visible');
+                if(playlistButton != null) playlistButton.classList.remove('active');
+            });
+
+            playlistButton.addEventListener('click', function() {
+                if(divExtrasPlaylist != null) divExtrasPlaylist.classList.toggle('visible');
+                if(playlistButton != null) playlistButton.classList.toggle('active');
+                if(divExtrasActions != null) divExtrasActions.classList.remove('visible');
+                if(actionsButton != null) actionsButton.classList.remove('active');
+            });
+
+            expandButton.addEventListener('click', function() {
+                if (reducedPlayer.classList.contains('small'))
+                    reducedPlayer.classList.remove('small');
+                else {
+                    reducedPlayer.classList.add('small');
+                    if(divExtrasActions != null) divExtrasActions.classList.remove('visible');
+                    if(actionsButton != null) actionsButton.classList.remove('active');
+                    if(divExtrasPlaylist != null) divExtrasPlaylist.classList.remove('visible');
+                    if(playlistButton != null) playlistButton.classList.remove('active');
+                }
+            });
+        }
+        else if (reducedPlayer != null)
+            reducedPlayer.remove();
+
+        function checkPaywall() {
+                    }
+// ----------------------------- END rwmpLoadPlayer() --------------------------------------
+    };
+
+    // initialisation des variables
+    const rwmpSongs = [{"rwm_episode_id":41701,"listen_id":14559443674518410,"listen_key":"3dd0f659bb764dd837b3fb38f56685e740b5b73d8d84c24c662d45dc2c40fd7c","name":"Lo\u00efc Gu\u00e9zo (SEMEA) - Cybersecurit\u00e9 des PME","description":"Lo\u00efc Gu\u00e9zo (SEMEA) - Cybersecurit\u00e9 des PME\u00a0Vous pouvez consulter notre politique de confidentialit\u00e9 sur https:\/\/art19.com\/privacy ainsi que la notice de confidentialit\u00e9 de la Californie sur https:\/\/art19.com\/privacy#do-not-sell-my-info.","metadata":{"duration":993.0448125,"channel":"joint stereo","audio_size":16022750,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/loic-guezo-semea-cybersecurite-des-pme","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ed43e04-ce61-6249-b88c-a530839c52bc","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/e395275639be3a13d88b6db97044d0a84b6611f69899fdd51d56aeb7c336.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/489c974b689bffe6f75fb3c7c87f481eadb90c88c873f7fbd5d8636f127d.jpg?alias=width400","date_create":1664886571,"slug":"loic-guezo-semea-cybersecurite-des-pme"},{"rwm_episode_id":40637,"listen_id":14559443675915934,"listen_key":"b75efbcb3bc506e86e0329f5fd7949aa9b6496e850941fc04b837564378b8794","name":"Claude Petrucci (PI Services) - Transformation digital\u2026","description":"Claude Petrucci (PI Services) - Transformation digitale des entreprisesVous pouvez consulter notre politique de confidentialit\u00e9 sur https:\/\/art19.com\/privacy ainsi que la notice de confidentialit\u00e9 de la Californie sur https:\/\/art19.com\/privacy#do-not-sell-my-info.","metadata":{"duration":1316.911,"channel":"joint stereo","audio_size":21204634,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/claude-petrucci-pi-services-transformation-digitale-des-entreprises-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ed34dd3-1736-647b-8ac7-072cee86c01f","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/33d4a1863ededa37999ca4d2171ee33fa87e4ac727e5fe13913e92b7b173.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/7ce737f03ad8153054496f239622595bfce3e1390b40cac64c944bdb4fd2.jpg?alias=width400","date_create":1663235434,"slug":"claude-petrucci-pi-services-transformation-digitale-des-entreprises-1"},{"rwm_episode_id":30511,"listen_id":14559443676045387,"listen_key":"e4a4157c88ac6b21a72702528711c2e2ecc4b3a05e26682b954a59048dba17f6","name":"Episode 17 - Vincent Redrado (Digital Native Group) \u2013\u2026","description":"","metadata":{"duration":1024.4963125,"channel":"joint stereo","audio_size":16526022,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-17-vincent-redrado-digital-native-group-recrutement-digital-rugby-et-ukraine-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ecb5c57-a40c-684c-b1d6-bb0832f6776b","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/d26c14266152699cab556708488e5f1400caefc85e8ce6ce3df030cc775c.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/66941c4dd85eea9c4dcd19948670a4f42191229e4a66e3946716de8e4e2c.jpg?alias=width400","date_create":1649261528,"slug":"episode-17-vincent-redrado-digital-native-group-recrutement-digital-rugby-et-ukraine-1"},{"rwm_episode_id":23914,"listen_id":14559443676154127,"listen_key":"dfbc0cedbe375c8e67221f3228d55f0315aa707aeff4d7c30a9ffce0e400fe37","name":"Stephan Dixmier (Bimpli), technologie, mon\u00e9tique et la\u2026","description":"","metadata":{"duration":1358.78525,"channel":"joint stereo","audio_size":21874646,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/stephan-dixmier-bimpli-technologie-monetique-et-la-vie-dentreprise-en-periode-de-covid-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ec776fb-7f8d-6952-b1d5-4f1f90272bf3","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/24600d79e1c1013a5d56b69c9e6590cd6354e514d06fb68c3cbb639c2d42.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/c61684d058877655d7027f01a791c8a39cbce0523b98f873253f7106b16b.jpg?alias=width400","date_create":1642408133,"slug":"stephan-dixmier-bimpli-technologie-monetique-et-la-vie-dentreprise-en-periode-de-covid-1"},{"rwm_episode_id":22120,"listen_id":14559443676256445,"listen_key":"5cac70a7ae1be07a46e06ed86a8b87f9eefa1bd6166ec5c502657262405b03ff","name":"Olivier Binet (Karos), covoiturage, recrutement et la\u2026","description":"PME Exp\u00e9rience, c'est le podcast de t\u00e9moignage des dirigeants de PME, TPE ou ETI pour mieux connaitre les coulisses de la cr\u00e9ation d'entreprise, les difficult\u00e9s rencontr\u00e9es et partager ses bonnes pratiques.See Privacy Policy at https:\/\/art19.com\/privacy and California Privacy Notice at https:\/\/art19.com\/privacy#do-not-sell-my-info.","metadata":{"duration":1630.9028125,"channel":"joint stereo","audio_size":26228525,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/olivier-binet-karos-covoiturage-recrutement-et-la-vie-dentreprise-en-periode-de-covid-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ec5dc44-dfd6-61f2-97d5-e91b8aa6117a","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/2ed5df34c3ca9de5f4aa021b2f0437c3437ee4b02642127903bf9c9b1b0b.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/8dd9ae5ce0e52ab26eec3217b05edb17e58cf621b1519943e498d385b790.jpg?alias=width400","date_create":1639585800,"slug":"olivier-binet-karos-covoiturage-recrutement-et-la-vie-dentreprise-en-periode-de-covid-1"},{"rwm_episode_id":3238,"listen_id":14559443676355421,"listen_key":"0e699b3d5cd592317f6109bc44bff9693333df6d408e678bbb8c9b8193194b1d","name":"Episode 13, Laurence Yvon (Tagetik), finance, business\u2026","description":"","metadata":{"duration":1127.915,"channel":"joint stereo","audio_size":18309814,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-13-laurence-yvon-tagetik-finance-business-intelligence-intelligence-artificielle-et-vie-dentreprise-en-periode-de-covid-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebce809-09c1-65d6-af85-55c3d0fd5e09","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/4cc1bcb426da75faac9ce99bb31a0e7477eac334390aeed1daacb59e09ab.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/61b670f5cbd758619f3c07173991202f90ec3cc3babce611c8eabce38cd5.jpg?alias=width400","date_create":1623833497,"slug":"episode-13-laurence-yvon-tagetik-finance-business-intelligence-intelligence-artificielle-et-vie-dentreprise-en-periode-de-covid-1"},{"rwm_episode_id":3214,"listen_id":14559443676455380,"listen_key":"98326590ef72a61ce8a83b05cd01f0cb548b79f48d7b31bcc8066874cba53935","name":"Episode 12 - Matthieu Havy","description":"","metadata":{"duration":1234.128875,"channel":"joint stereo","audio_size":20009125,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-12-matthieu-havy-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebcdf85-a92f-67d0-820e-5d398140d50d","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/7abac9d3c851126ed65e943feaf84201cf56963bcbeccc9c0938fe241e2c.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/d98777aa4f42441dbeca0026c2f7a017942fbd2fe539004d71d3d1e1b17a.jpg?alias=width400","date_create":1623774968,"slug":"episode-12-matthieu-havy-1"},{"rwm_episode_id":2643,"listen_id":14559443676538416,"listen_key":"1cfad6fe5d0216be73ebbfe1a43395d3af5dd01847b733fc8edfdedc47356db4","name":"Episode 11 - Jean-Yves Grandidier (Valorem) - Energies\u2026","description":"","metadata":{"duration":1373.62275,"channel":"joint stereo","audio_size":22241126,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-11-jean-yves-grandidier-valorem-energies-renouvelables-technologies-et-vie-dentreprise-en-periode-de-covid-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebc20eb-d482-6de6-8f68-0929d967d46d","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/e02c4c0817aa982700a85c15facba5697f38e3e8b66d0a9445d94bc192bf.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/81de78c800835b5db1857502b68b929790805359b7c66d220bcc46a2e42e.jpg?alias=width400","date_create":1622465299,"slug":"episode-11-jean-yves-grandidier-valorem-energies-renouvelables-technologies-et-vie-dentreprise-en-periode-de-covid-1"},{"rwm_episode_id":1718,"listen_id":14559443676635459,"listen_key":"a450a239daa057a81c95f84c16aa0c06f95b7569fc482fc237dafc2df004fac8","name":"Episode 10 - Antoine Grimaud (PayPlug.) \u2013 PME, E-comme\u2026","description":"\n      ","metadata":{"duration":1221.2505,"channel":"joint stereo","audio_size":19803147,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-10-antoine-grimaud-payplug-pme-e-commerce-et-vie-dentreprise-en-periode-de-covid-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebbd789-3896-665e-acb1-d9d63022a76c","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/56cb6a41ced480249b7447db3ca2b24870c3c91d7e2f31c80b0985dce453.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/c4333a932697cfde16586f5a73f93f4317369cbb55d2e26b9ed76918e2cf.jpg?alias=width400","date_create":1621960928,"slug":"episode-10-antoine-grimaud-payplug-pme-e-commerce-et-vie-dentreprise-en-periode-de-covid-1"},{"rwm_episode_id":1708,"listen_id":14559443676744466,"listen_key":"00fff79a85e834df5a0a9105cece185a1db6f64333a642d88cf67c54421ba008","name":"Episode 9 - Matthieu Walckenaer (PlanRadar), num\u00e9risat\u2026","description":"\n      ","metadata":{"duration":1230.1583125,"channel":"joint stereo","audio_size":19945681,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-9-matthieu-walckenaer-planradar-numerisation-des-secteurs-de-la-construction-et-de-limmobilier-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebb6eac-bfbe-615e-8d2c-c33e70fd876c","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/81013272c5aa4e46f076a666842d12f8ee604b07708b396f29be68ab6efe.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/02a915db308d6264e6e9ade3dda7099e71f7d2f95ef911860e2576247d87.jpg?alias=width400","date_create":1621233168,"slug":"episode-9-matthieu-walckenaer-planradar-numerisation-des-secteurs-de-la-construction-et-de-limmobilier-1"},{"rwm_episode_id":1704,"listen_id":14559443676842051,"listen_key":"c279084b237de7e7ab3668950700a453aefbdf7ac50eee1288f0251cf74bdc8e","name":"Episode 8 - Jean-St\u00e9phane Arcis (Talentsoft) - RH, R&D\u2026","description":"\n      ","metadata":{"duration":1159.8366875,"channel":"joint stereo","audio_size":18820514,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-8-jean-stephane-arcis-talentsoft-rh-r-d-et-adaptation-a-la-crise-du-covid","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebb5b41-1e75-6aa0-acab-a90be799c0b8","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/19d82b2cc83ea89135ed5aceced65f646bab79cae8b20c2c63e9bf864c3b.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/0315b6ae691a7fce9af7a8851124f25a1a0ba34882775786ef0c01c098db.jpg?alias=width400","date_create":1619710087,"slug":"episode-8-jean-stephane-arcis-talentsoft-rh-r-d-et-adaptation-a-la-crise-du-covid"},{"rwm_episode_id":1703,"listen_id":14559443676936158,"listen_key":"ac21371bf3451838c5d5ca61e5b1fde6289018d83a649531616cbd503fed7b8f","name":"Episode 7 - Emilie Benoit-Vernay (Shopify) - Marketing\u2026","description":"\n      ","metadata":{"duration":1110.622,"channel":"joint stereo","audio_size":18033090,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-7-emilie-benoit-vernay-shopify-marketing-e-commerce-et-adaptation-a-la-crise-du-covid","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebb5b40-ea9e-6dbc-8696-a90be799c0b8","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/bfca6eb75ac741694d0cb0bae8af16b5c971767490efd995856c04f7b2f1.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/cddd6c2e16f93064b26883d6dfa06e889a5f14fd80e257d5211069832698.jpg?alias=width400","date_create":1619707693,"slug":"episode-7-emilie-benoit-vernay-shopify-marketing-e-commerce-et-adaptation-a-la-crise-du-covid"},{"rwm_episode_id":1702,"listen_id":14559443677029797,"listen_key":"d04d347e3e673d3a6114eca315eb86afb28b845f272f6a69368a415cf9a26fd4","name":"Episode 6 - Laurent Mogno (ECT) - Buldozer, r\u00eave am\u00e9ri\u2026","description":"\n      ","metadata":{"duration":1136.613875,"channel":"joint stereo","audio_size":18448954,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-6-laurent-mogno-ect-buldozer-reve-americain-et-adaptation-a-la-crise-du-covid","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebb5b40-b4e6-6544-96a4-a90be799c0b8","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/e933482c44d6f986c232b3afa102a9dea13cce5a23eb9c5862119b2560f6.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/e15aca3ef77142a06446b0319c7bc039ba386890f819c1a6e873bb66e481.jpg?alias=width400","date_create":1619706132,"slug":"episode-6-laurent-mogno-ect-buldozer-reve-americain-et-adaptation-a-la-crise-du-covid"},{"rwm_episode_id":1701,"listen_id":14559443677123013,"listen_key":"00fe948b286500f88656581e37277083e9f945b68bc07555cbfe953887eda71b","name":"\u00c9pisode 4 - Xavier Latil (The Blockchain Group) - Croi\u2026","description":"\n        Xavier Latil, CEO de The Blockchain Group, a d\u00e9velopp\u00e9 l'une des r\u00e9f\u00e9rences europ\u00e9ennes dans le domaine de la Blockchain. Il nous raconte son parcours entrepreneurial, entre croissance externe et adaptation \u00e0 la situation actuelle.\n      ","metadata":{"duration":1057.4628125,"channel":"joint stereo","audio_size":17182568,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-4-xavier-latil-the-blockchain-group-croissance-externe-et-adaptation-a-la-crise-du-covid-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebb5b40-806b-6cc4-aab1-a90be799c0b8","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/a506430afe2f51b3503f1ec49491e82fa8f58046ac9a528df1f59c8f9665.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/3392890a5241d983581ab5176f8df97f48eded87dec88bcc622dd8df64d4.jpg?alias=width400","date_create":1603820328,"slug":"episode-4-xavier-latil-the-blockchain-group-croissance-externe-et-adaptation-a-la-crise-du-covid-1"},{"rwm_episode_id":1700,"listen_id":14559443677215531,"listen_key":"2c4ed0704d5cd5c84a5b0d88d85fd62478a8ae851ef157b417d986a25e11570d","name":"\u00c9pisode 3 - Marc Negroni (Nextedia) - S'adapter \u00e0 la c\u2026","description":"\n        Nextedia a su s'adapter \u00e0 la crise sanitaire. Marc Negroni, PDG du groupe Nextedia, a amen\u00e9 son groupe \u00e0 saisir les opportunit\u00e9s de march\u00e9 li\u00e9es au contexte de confinement, il nous explique comment il a men\u00e9 son entreprise dans un contexte difficile.\n      ","metadata":{"duration":1081.573875,"channel":"joint stereo","audio_size":17568311,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-3-marc-negroni-nextedia-sadapter-a-la-crise-sanitaire-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebb5b40-6661-695a-82c7-a90be799c0b8","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/1f08f331b4dc30f8e987d8b699beb45f12f99ed0ace5c2edc9a3d5323347.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/b4b4d00df1d0a8ad7bbf47df386ea4b87960585277ad53125f893314ae17.jpg?alias=width400","date_create":1600789246,"slug":"episode-3-marc-negroni-nextedia-sadapter-a-la-crise-sanitaire-1"},{"rwm_episode_id":1699,"listen_id":14559443677306926,"listen_key":"8f4575f8dc32b8934b3985983814be95362a73b94fd6e7d2243a4f2c011000ae","name":"\u00c9pisode 2 - Elena Del Gaudio (Del Gaudio Gourmet) - Im\u2026","description":"\n        Elena Del Gaudio a lanc\u00e9 une nouvelle activit\u00e9 d'import de produits alimentaires depuis l'Italie vers la France. Elle nous raconte ses difficult\u00e9s et ses succ\u00e8s en toute simplicit\u00e9 !\n      ","metadata":{"duration":1081.417125,"channel":"joint stereo","audio_size":17565799,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-2-elena-del-gaudio-del-gaudio-gourmet-importer-des-produits-alimentaires-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebb5b40-3a5d-6412-b828-a90be799c0b8","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/4cd3f9e5a55ba736eb78e1aec817a83e184c45b0f09bf1e2379891bccfea.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/634ae935e9523afc243fd371a7f612900aab4d205b3a5c2b386297adc0f2.jpg?alias=width400","date_create":1600780092,"slug":"episode-2-elena-del-gaudio-del-gaudio-gourmet-importer-des-produits-alimentaires-1"},{"rwm_episode_id":1698,"listen_id":14559443677397698,"listen_key":"8dff3cfc2f1a3187241327028524040bbfce0c696a074bc493868f90ccb0f94a","name":"\u00c9pisode 1 - Herv\u00e9 Lenglart (NetMedia Group) - Vendre s\u2026","description":"\n        Herv\u00e9 Lenglart, ex-dirigeant historique de Editialis, a vendu sa soci\u00e9t\u00e9 en 2018 au groupe NetMedia. Il nous raconte les coulisses de la cession, nous donne ses conseils et nous explique les difficult\u00e9s qu'il a pu rencontrer. Un entretien exclusif pour PME Exp\u00e9rience, le podcast des chefs d'entreprises.\n      ","metadata":{"duration":1078.804875,"channel":"joint stereo","audio_size":17524007,"bit_rate":128000,"sample_rate":44100},"artist":"PME Exp\u00e9rience","album":"Saison 1","serie_url":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience","frontpage":"https:\/\/publishers.edisound.com\/fr\/podcast\/netmedia-group\/pme-experience\/episode-1-herve-lenglart-netmedia-group-vendre-sa-societe-1","download_url":"https:\/\/publishers.edisound.com\/podcast\/download\/1ebb5b3f-ff7e-6580-87fc-a90be799c0b8","url":"https:\/\/media.edisound.com\/medias\/episodes\/audio\/65da4acccfd9b5b822f2bac7ec826b22351c69804ff23c877ef3fd26c18d.downsized.mp3","cover_art_url":"https:\/\/media.edisound.com\/medias\/episodes\/image\/8d248c8eaa4cd9e6bd41b54f379599a99cdd2023ca0935498f887b68c009.jpg?alias=width400","date_create":1600177315,"slug":"episode-1-herve-lenglart-netmedia-group-vendre-sa-societe-1"}];
+    const rwmp_share_htmlTemplate = `<!--div class="rwm-podcast-player__share"--><ul class="rwmp__share-menu"><li class="rwmp__share-menu-item rwmp__share-menu-item--twitter"><a class="js-sharing-popup-twitter" data-share-type="twitter" title="Partager sur Twitter"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path opacity="0" d="M0 0h24v24H0z"></path><path d="M23.643 4.937c-.835.37-1.732.62-2.675.733.962-.576 1.7-1.49 2.048-2.578-.9.534-1.897.922-2.958 1.13-.85-.904-2.06-1.47-3.4-1.47-2.572 0-4.658 2.086-4.658 4.66 0 .364.042.718.12 1.06-3.873-.195-7.304-2.05-9.602-4.868-.4.69-.63 1.49-.63 2.342 0 1.616.823 3.043 2.072 3.878-.764-.025-1.482-.234-2.11-.583v.06c0 2.257 1.605 4.14 3.737 4.568-.392.106-.803.162-1.227.162-.3 0-.593-.028-.877-.082.593 1.85 2.313 3.198 4.352 3.234-1.595 1.25-3.604 1.995-5.786 1.995-.376 0-.747-.022-1.112-.065 2.062 1.323 4.51 2.093 7.14 2.093 8.57 0 13.255-7.098 13.255-13.254 0-.2-.005-.402-.014-.602.91-.658 1.7-1.477 2.323-2.41z"></path></svg></a></li><li class="rwmp__share-menu-item rwmp__share-menu-item--facebook"><a class="js-sharing-popup-facebook" data-share-type="facebook" title="Partager sur Facebook"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M16.75,9H13.5V7a1,1,0,0,1,1-1h2V3H14a4,4,0,0,0-4,4V9H8v3h2v9h3.5V12H16Z"></path></svg></a></li><li class="rwmp__share-menu-item  rwmp__share-menu-item--linkedin"><a class="js-sharing-popup-linkedin" data-share-type="linkedin" title="Partager sur Linkedin"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><rect height="11" width="4" x="3" y="9"></rect><circle cx="5" cy="5" r="2"></circle><path d="M16.5,8.25A4.47251,4.47251,0,0,0,13,9.95343V9H9V20h4V13a2,2,0,0,1,4,0v7h4V12.75A4.5,4.5,0,0,0,16.5,8.25Z"></path></svg></a></li><li class="rwmp__share-menu-item rwmp__share-menu-item--link rwmp__share__popin"><span class="rwmp__share__popintext" id="rwmp__share__copy-link-popin">Le lien a été copié  dans le presse-papier</span><a class="js-sharing-copy-link" data-share-type="copy-link" title="Copier le lien"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"  viewBox="0 0 56 72"><path d="M29.518 12.25l-8.705 8.704a13.624 13.624 0 0 0-2.881 4.26 13.617 13.617 0 0 0-1.128 5.377c0 5.48 3.076 8.778 4.01 9.77 2.346 2.494 7.014 3.983 7.416 3.674.637-.49 2.665-3.002.174-5.764-.452-.502-3.605-.852-5.154-4.667-.836-2.059-.753-4.129.076-6.055a7.8 7.8 0 0 1 1.647-2.434l8.705-8.704c3.057-3.057 8.032-3.057 11.089 0 3.057 3.057 3.057 8.032 0 11.089l-4.175 4.174a17.549 17.549 0 0 1 2.37 5.947l5.963-5.962c5.35-5.351 5.35-14.057 0-19.408C43.574 6.9 34.869 6.9 29.518 12.25z"></path><path d="M26.357 59.768l9.01-9.01a13.624 13.624 0 0 0 2.881-4.26 13.617 13.617 0 0 0 1.128-5.377c0-5.48-3.076-8.778-4.01-9.77-2.346-2.494-7.014-3.983-7.416-3.674-.637.49-2.665 3.002-.174 5.764.452.502 3.605.852 5.154 4.667.836 2.059.753 4.129-.076 6.055a7.8 7.8 0 0 1-1.647 2.434l-9.01 9.01c-3.057 3.057-8.032 3.057-11.089 0-3.057-3.057-3.057-8.032 0-11.089l4.479-4.479a17.549 17.549 0 0 1-2.37-5.947L6.95 40.36c-5.35 5.351-5.35 14.057 0 19.408 5.351 5.35 14.057 5.35 19.407 0z"></path></svg></a></li><li class="rwmp__share-menu-item rwmp__share-menu-item--email"><a class="js-sharing-email" data-share-type="email" title="Envoyer le lien par email"><svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" width="24" height="24" role="img" aria-hidden="true" data-icon="envelope" data-prefix="fas" id="ember68" class="svg-inline--fa fa-envelope fa-w-16 ember-view"><path d="M502.3 190.8c3.9-3.1 9.7-.2 9.7 4.7V400c0 26.5-21.5 48-48 48H48c-26.5 0-48-21.5-48-48V195.6c0-5 5.7-7.8 9.7-4.7 22.4 17.4 52.1 39.5 154.1 113.6 21.1 15.4 56.7 47.8 92.2 47.6 35.7.3 72-32.8 92.3-47.6 102-74.1 131.6-96.3 154-113.7zM256 320c23.2.4 56.6-29.2 73.4-41.4 132.7-96.3 142.8-104.7 173.4-128.7 5.8-4.5 9.2-11.5 9.2-18.9v-19c0-26.5-21.5-48-48-48H48C21.5 64 0 85.5 0 112v19c0 7.4 3.4 14.3 9.2 18.9 30.6 23.9 40.7 32.4 173.4 128.7 16.8 12.2 50.2 41.8 73.4 41.4z"></path></svg></a></li></ul><div class="rwmp__share-menu-item--close"><svg width="12" height="12"  viewBox="0 0 329.26933 329" width="329pt" xmlns="http://www.w3.org/2000/svg"><path d="m194.800781 164.769531 128.210938-128.214843c8.34375-8.339844 8.34375-21.824219 0-30.164063-8.339844-8.339844-21.824219-8.339844-30.164063 0l-128.214844 128.214844-128.210937-128.214844c-8.34375-8.339844-21.824219-8.339844-30.164063 0-8.34375 8.339844-8.34375 21.824219 0 30.164063l128.210938 128.214843-128.210938 128.214844c-8.34375 8.339844-8.34375 21.824219 0 30.164063 4.15625 4.160156 9.621094 6.25 15.082032 6.25 5.460937 0 10.921875-2.089844 15.082031-6.25l128.210937-128.214844 128.214844 128.214844c4.160156 4.160156 9.621094 6.25 15.082032 6.25 5.460937 0 10.921874-2.089844 15.082031-6.25 8.34375-8.339844 8.34375-21.824219 0-30.164063zm0 0"/></svg></div><!--/div-->`;
+    const rwmpContainerEl = document.querySelector(".rwm-podcast-player[data-pid='1ec19f46-ce07-6960-b77e-5fa87749e5b3']");
+
+            const rwmp_htmlTemplate = `<!-- Edisound Player --><div id="widget-container" class="edisound_widget-container bc1"><div id="amplitude-container"><div id="amplitude-player" class="cc5"><div id="tools-container-mobile" class="tools-container"><span class="subscribe"><svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 569.687 510.645"><path class="cc2" d="M151.335,0c81.955,0,105.071,58.84,134.491,77.753C313.145,58.84,336.26,0,420.317,0c81.955,0,147.1,67.245,149.2,151.3,6.3,121.882-203.838,306.808-283.692,359.343C203.871,458.11-4.17,273.185.033,151.3,4.236,67.245,67.278,0,151.335,0Z" transform="translate(0.03 0)" fill-rule="evenodd"/></svg></span><span class="share rwmp-share"><svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 290.313 272.153"><path class="cc2" d="M286.927,2A9.153,9.153,0,0,0,277.873.635L5.7,109.5a9.066,9.066,0,0,0-.417,16.657l85.444,39.447L281.247,9.054l-154.231,173.3v89.8l64.378-60.077,49.753,22.953a9.37,9.37,0,0,0,3.81.835,9.088,9.088,0,0,0,8.945-7.585l36.29-217.738A9.083,9.083,0,0,0,286.927,2Z" transform="translate(0 -0.001)"/></svg></span><span class="download"><svg xmlns="http://www.w3.org/2000/svg" width="25px" height="25px" viewBox="0 0 25 25"><path class="cc2" d="M 18.679688 11.398438 C 18.554688 11.117188 18.277344 10.9375 17.96875 10.9375 L 14.84375 10.9375 L 14.84375 0.78125 C 14.84375 0.351562 14.492188 0 14.0625 0 L 10.9375 0 C 10.507812 0 10.15625 0.351562 10.15625 0.78125 L 10.15625 10.9375 L 7.03125 10.9375 C 6.722656 10.9375 6.445312 11.117188 6.320312 11.398438 C 6.191406 11.675781 6.242188 12 6.441406 12.234375 L 11.910156 18.484375 C 12.054688 18.65625 12.269531 18.753906 12.496094 18.753906 C 12.71875 18.753906 12.933594 18.65625 13.082031 18.484375 L 18.550781 12.238281 C 18.757812 12 18.808594 11.675781 18.679688 11.398438 Z M 18.679688 11.398438 "/><path class="cc2" d="M 21.09375 18.277344 L 21.09375 20.78125 C 21.09375 21.382812 20.605469 21.871094 20.003906 21.871094 L 4.996094 21.871094 C 4.394531 21.875 3.90625 21.386719 3.90625 20.785156 L 3.90625 18.28125 C 3.90625 17.675781 3.417969 17.1875 2.816406 17.1875 L 1.871094 17.1875 C 1.269531 17.1875 0.78125 17.675781 0.78125 18.277344 L 0.78125 23.4375 C 0.78125 24.300781 1.480469 25 2.34375 25 L 21.566406 25 C 23.03125 25 24.21875 23.8125 24.21875 22.347656 L 24.21875 18.28125 C 24.21875 17.679688 23.730469 17.191406 23.128906 17.191406 L 22.1875 17.191406 C 21.582031 17.1875 21.09375 17.675781 21.09375 18.277344 Z M 21.09375 18.277344 "/></svg></span></div><div id="player-top-left"><img class="amplitude-play-pause" data-amplitude-song-info="cover_art_url"/></div><div id="player-top-right" class="hover-container"><div id="tools-container-desktop" class="tools-container display-on-hover"><span class="subscribe"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 569.687 510.645"><path class="cc3" d="M151.335,0c81.955,0,105.071,58.84,134.491,77.753C313.145,58.84,336.26,0,420.317,0c81.955,0,147.1,67.245,149.2,151.3,6.3,121.882-203.838,306.808-283.692,359.343C203.871,458.11-4.17,273.185.033,151.3,4.236,67.245,67.278,0,151.335,0Z" transform="translate(0.03 0)" fill-rule="evenodd"/></svg></span><span class="share rwmp-share"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 290.313 272.153"><path class="cc3" d="M286.927,2A9.153,9.153,0,0,0,277.873.635L5.7,109.5a9.066,9.066,0,0,0-.417,16.657l85.444,39.447L281.247,9.054l-154.231,173.3v89.8l64.378-60.077,49.753,22.953a9.37,9.37,0,0,0,3.81.835,9.088,9.088,0,0,0,8.945-7.585l36.29-217.738A9.083,9.083,0,0,0,286.927,2Z" transform="translate(0 -0.001)"/></svg></span><span class="download"><svg xmlns="http://www.w3.org/2000/svg" width="15px" height="15px" viewBox="0 0 12 12"><path class="cc3" style="stroke:none;" d="M 8.96875 5.46875 C 8.90625 5.335938 8.773438 5.25 8.625 5.25 L 7.125 5.25 L 7.125 0.375 C 7.125 0.167969 6.957031 0 6.75 0 L 5.25 0 C 5.042969 0 4.875 0.167969 4.875 0.375 L 4.875 5.25 L 3.375 5.25 C 3.226562 5.25 3.09375 5.335938 3.03125 5.46875 C 2.972656 5.605469 2.996094 5.761719 3.089844 5.875 L 5.714844 8.875 C 5.785156 8.957031 5.890625 9.003906 5.996094 9.003906 C 6.105469 9.003906 6.207031 8.957031 6.277344 8.875 L 8.902344 5.875 C 9.003906 5.761719 9.027344 5.605469 8.96875 5.46875 Z M 8.96875 5.46875 "/><path class="cc3" style="stroke:none;" d="M 10.125 8.773438 L 10.125 9.976562 C 10.125 10.261719 9.890625 10.496094 9.601562 10.496094 L 2.398438 10.496094 C 2.109375 10.5 1.875 10.265625 1.875 9.976562 L 1.875 8.773438 C 1.875 8.484375 1.640625 8.25 1.351562 8.25 L 0.898438 8.25 C 0.609375 8.25 0.375 8.484375 0.375 8.773438 L 0.375 11.25 C 0.375 11.664062 0.710938 12 1.125 12 L 10.351562 12 C 11.054688 12 11.625 11.429688 11.625 10.726562 L 11.625 8.773438 C 11.625 8.488281 11.390625 8.253906 11.101562 8.253906 L 10.648438 8.253906 C 10.359375 8.25 10.125 8.484375 10.125 8.773438 Z M 10.125 8.773438 "/></svg></span></div><div id="meta-container"><div class="song-artist-album"><span data-amplitude-song-info="artist" class="song-serie cc3"></span></div><div class="msg">sponsorisé</div><div class="meta-container-play"><div class="amplitude-play-pause cbc2"><svg class="svg edisound_widget-container__play" width="40" height="40" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="40" height="40" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div data-amplitude-song-info="name" class="song-name cc4"></div></div></div><div id="amplitude-control-desktop" class="cc5" style="display: none"><div id="control-container"><div class="edisound-progress-bar"><div id="time-container-desktop"><div id="progress-container"><input type="range" class="amplitude-song-slider" step=".1"/></div><span class="current-time"><span class="amplitude-current-minutes"></span>:<span class="amplitude-current-seconds"></span></span><span class="duration cc4"><span class="amplitude-duration-minutes"></span>:<span class="amplitude-duration-seconds"></span></span></div></div><div id="central-control-container" class="display-on-hover"><div id="central-controls"><div id="volume-controls"><div class="amplitude-mute amplitude-not-muted"><svg class="svg edisound_widget-container__not-muted" width="15" height="15" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 61 48.4" xml:space="preserve"><g><path class="cc2" d="M30.5,43.2c0,1.1-0.6,2-1.6,2.5c-0.4,0.2-0.8,0.3-1.2,0.3c-0.6,0-1.3-0.2-1.8-0.6L10.8,32.8H2.8C1.2,32.8,0,31.6,0,30V19c0-1.5,1.2-2.8,2.8-2.8h8.1L26,3.7c0.8-0.7,2-0.8,2.9-0.4c1,0.5,1.6,1.4,1.6,2.5L30.5,43.2L30.5,43.2zM41.1,38.9c-0.1,0-0.1,0-0.2,0c-0.7,0-1.4-0.3-2-0.8l-0.4-0.4c-1-1-1.1-2.5-0.3-3.6c2.1-2.8,3.2-6.1,3.2-9.6c0-3.7-1.2-7.2-3.6-10.1c-0.9-1.1-0.8-2.7,0.2-3.7l0.4-0.4c0.6-0.6,1.3-0.9,2.1-0.8c0.8,0,1.5,0.4,2,1c3.3,4,5,8.8,5,14c0,4.8-1.5,9.4-4.4,13.3C42.7,38.4,41.9,38.8,41.1,38.9z M52.6,47.5c-0.5,0.6-1.2,0.9-2,1c0,0-0.1,0-0.1,0c-0.7,0-1.4-0.3-2-0.8l-0.4-0.4c-1-1-1.1-2.6-0.2-3.7c4.5-5.3,6.9-12.1,6.9-19c0-7.2-2.6-14.2-7.4-19.6c-1-1.1-0.9-2.8,0.1-3.8L48,0.8C48.5,0.3,49.2,0,50,0c0.8,0,1.5,0.4,2,0.9c5.8,6.5,9,14.9,9,23.6C61,32.9,58,41.1,52.6,47.5z"/></g></svg><svg class="svg edisound_widget-container__muted" width="15" height="15" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 61 48.4" xml:space="preserve"><g><path class="cc2" d="M30.5,43.2c0,1.1-0.6,2-1.6,2.5c-0.4,0.2-0.8,0.3-1.2,0.3c-0.6,0-1.3-0.2-1.8-0.6L10.8,32.8H2.8C1.2,32.8,0,31.6,0,30V19c0-1.5,1.2-2.8,2.8-2.8h8.1L26,3.7c0.8-0.7,2-0.8,2.9-0.4c1,0.5,1.6,1.4,1.6,2.5L30.5,43.2L30.5,43.2z M36.4,15.8L36.4,15.8l8.4,8.4l-8.4,8.4c-0.7,0.7-0.7,1.8,0,2.5l1.1,1.1c0.7,0.7,1.8,0.7,2.5,0l8.4-8.4l8.4,8.4c0.7,0.7,1.8,0.7,2.5,0l1.1-1.1c0.7-0.7,0.7-1.8,0-2.5L52,24.2l8.5-8.5c0.7-0.7,0.7-1.8,0-2.5l-1.1-1.1c-0.7-0.7-1.8-0.7-2.5,0l-8.5,8.5L40,12.2c-0.7-0.7-1.8-0.7-2.5,0l-1.1,1.1C35.7,13.9,35.7,15.1,36.4,15.8z"/></g></svg></div><input type="range" class="amplitude-volume-slider"></div><div class="rwm-prev" id="previous"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 493.5 493.5"><path class="cc2" d="M447.1.2C437 .2 426.2 4.3 415 12.1L140.9 201c-17.6 12.2-27.3 28.5-27.3 46.1s9.8 33.9 27.4 46.1l274.3 188.7c11.3 7.8 22.6 11.7 32.6 11.7 10.8 0 18.9-4.4 25.3-13 6.3-8.5 8.7-20.5 8.7-35v-397C482 18.7 469.2.2 447.1.2zM53.1 0H39.9C25 0 11.6 12.1 11.6 27v439.4c0 14.9 13 27.1 27.9 27.1h.5l12.9-.1c14.9 0 28.1-12.2 28.1-27V27C81 12.1 68 0 53.1 0z"/></svg></div><div id="back" class="back"><svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"  viewBox="0 0 35.7 40.7" style="enable-background:new 0 0 35.7 40.7;" xml:space="preserve"><path class="cc2" d="M29.7,6c-3.9-3.9-9-6-14.4-6C10.5,0,5.8,1.7,2.1,4.8V1c0-0.5-0.4-1-1.1-1S0,0.5,0,1v6.8c0,0.7,0.5,0.8,1,0.8h6.9C8.5,8.6,9,8.2,9,7.5c0-0.5-0.4-1-1.1-1H3.5C6.8,3.6,11,2,15.4,2c4.9,0,9.5,1.9,12.9,5.3c3.4,3.4,5.3,8,5.3,12.9c0,4.9-1.9,9.5-5.3,12.9c-3.4,3.4-8,5.3-12.9,5.3c-4.9,0-9.5-1.9-12.9-5.3c-0.4-0.4-1.2-0.4-1.6,0c-0.4,0.4-0.4,1.2,0,1.6c3.9,3.9,9,6,14.4,6c5.4,0,10.5-2.1,14.4-6c3.9-3.9,6-9,6-14.4C35.7,14.9,33.6,9.8,29.7,6z"/><g><path class="cc2" d="M7.7,14.5C7.9,14.7,8,15,8,15.3v10.9c0,0.3-0.1,0.6-0.4,0.8c-0.2,0.2-0.5,0.3-0.9,0.3S6.1,27.2,5.8,27c-0.2-0.2-0.3-0.5-0.3-0.8v-9l-1.2,0.7c-0.1,0.2-0.3,0.3-0.5,0.3c-0.3,0-0.6-0.1-0.8-0.4S2.7,17.3,2.7,17c0-0.2,0.1-0.4,0.2-0.6C3,16.2,3.1,16.1,3.3,16l2.9-1.7c0.2-0.1,0.5-0.2,0.8-0.2C7.2,14.2,7.4,14.3,7.7,14.5z"/><path class="cc2" d="M12.5,26.7c-0.8-0.6-1.3-1.4-1.7-2.4s-0.6-2.2-0.6-3.6s0.2-2.5,0.6-3.6c0.4-1,1-1.8,1.7-2.4s1.7-0.8,2.7-0.8s2,0.3,2.7,0.8c0.8,0.6,1.3,1.4,1.7,2.4c0.4,1,0.6,2.2,0.6,3.6s-0.2,2.5-0.6,3.6s-1,1.8-1.7,2.4c-0.8,0.6-1.7,0.9-2.7,0.9S13.2,27.3,12.5,26.7z M17.1,24.2c0.5-0.8,0.7-1.9,0.7-3.4s-0.2-2.6-0.7-3.4s-1.1-1.2-1.9-1.2s-1.4,0.4-1.9,1.2c-0.5,0.8-0.7,1.9-0.7,3.4s0.2,2.6,0.7,3.4s1.1,1.2,1.9,1.2C16,25.3,16.6,24.9,17.1,24.2z"/><path class="cc2" d="M21.5,25.3c0-0.3,0.2-0.6,0.5-0.8c0.2-0.1,0.4-0.2,0.5-0.2c0.3,0,0.5,0.1,0.8,0.4c0.4,0.4,0.8,0.7,1.2,0.9c0.4,0.2,0.9,0.3,1.5,0.3c1,0,1.5-0.4,1.5-1.1c0-0.4-0.2-0.6-0.5-0.8s-0.9-0.4-1.6-0.6c-0.7-0.2-1.3-0.4-1.8-0.6s-0.9-0.5-1.2-0.9c-0.3-0.4-0.5-1-0.5-1.7c0-0.6,0.2-1.1,0.5-1.6c0.3-0.4,0.8-0.8,1.4-1s1.2-0.4,1.8-0.4s1.3,0.1,1.9,0.4c0.6,0.2,1.1,0.6,1.5,1.1c0.2,0.2,0.2,0.4,0.2,0.7c0,0.3-0.1,0.5-0.4,0.7c-0.2,0.1-0.4,0.2-0.6,0.2c-0.3,0-0.5-0.1-0.7-0.3c-0.2-0.3-0.5-0.5-0.9-0.7s-0.8-0.2-1.2-0.2c-1,0-1.4,0.3-1.4,1c0,0.3,0.1,0.5,0.3,0.7s0.4,0.3,0.7,0.4c0.3,0.1,0.7,0.2,1.1,0.3c0.7,0.2,1.2,0.4,1.7,0.6s0.8,0.5,1.2,0.9c0.3,0.4,0.5,1,0.5,1.6s-0.2,1.2-0.5,1.6c-0.4,0.5-0.8,0.8-1.4,1c-0.6,0.2-1.2,0.4-1.8,0.4c-0.8,0-1.6-0.1-2.3-0.4s-1.3-0.7-1.8-1.3C21.5,25.7,21.5,25.5,21.5,25.3z"/></g></svg></div><div class="amplitude-play-pause cbc2" style="display: none;"><svg class="svg edisound_widget-container__play" width="40" height="40" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"></path></svg><svg class="svg edisound_widget-container__pause" width="40" height="40" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"></path></g></svg></div><div id="forward" class="forward"><svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 35.7 40.7" style="enable-background:new 0 0 35.7 40.7;" xml:space="preserve"><path class="cc2" d="M35.5,0.5C35.4,0.2,35,0,34.7,0c-0.7,0-1.1,0.5-1.1,1v3.8C29.9,1.7,25.3,0,20.4,0C14.9,0,9.8,2.1,6,6c-3.9,3.9-6,9-6,14.4c0,5.4,2.1,10.5,6,14.4c3.9,3.9,9,6,14.4,6s10.5-2.1,14.4-6c0.4-0.4,0.4-1.2,0-1.6c-0.4-0.4-1.2-0.4-1.6,0c-3.4,3.4-8,5.3-12.9,5.3s-9.5-1.9-12.9-5.3C3.9,29.7,2,25.1,2,20.2c0-4.9,1.9-9.5,5.3-12.9S15.4,2,20.2,2c4.4,0,8.6,1.6,12,4.5h-4.5c-0.7,0-1,0.5-1,1c0,0.7,0.5,1.1,1,1.1h6.7c0.7,0,1-0.5,1-1.1V1.1C35.6,0.9,35.6,0.7,35.5,0.5z"/><g><path class="cc2" d="M13.9,14.5c0.2,0.2,0.3,0.5,0.3,0.8v10.9c0,0.3-0.1,0.6-0.4,0.8c-0.2,0.2-0.5,0.3-0.9,0.3S12.3,27.2,12,27c-0.2-0.2-0.3-0.5-0.3-0.8v-9l-1.2,0.7c-0.1,0.2-0.3,0.3-0.5,0.3c-0.3,0-0.6-0.1-0.8-0.4S8.8,17.3,8.8,17c0-0.2,0.1-0.4,0.2-0.6c0.1-0.2,0.2-0.3,0.4-0.4l2.9-1.7c0.2-0.1,0.5-0.2,0.8-0.2C13.4,14.2,13.6,14.3,13.9,14.5z"/><path class="cc2" d="M18.6,26.7c-0.8-0.6-1.3-1.4-1.7-2.4s-0.6-2.2-0.6-3.6s0.2-2.5,0.6-3.6c0.4-1,1-1.8,1.7-2.4s1.7-0.8,2.7-0.8s2,0.3,2.7,0.8c0.8,0.6,1.3,1.4,1.7,2.4c0.4,1,0.6,2.2,0.6,3.6s-0.2,2.5-0.6,3.6s-1,1.8-1.7,2.4c-0.8,0.6-1.7,0.9-2.7,0.9S19.4,27.3,18.6,26.7z M23.2,24.2c0.5-0.8,0.7-1.9,0.7-3.4s-0.2-2.6-0.7-3.4s-1.1-1.2-1.9-1.2s-1.4,0.4-1.9,1.2c-0.5,0.8-0.7,1.9-0.7,3.4s0.2,2.6,0.7,3.4s1.1,1.2,1.9,1.2C22.1,25.3,22.8,24.9,23.2,24.2z"/><path class="cc2" d="M27.6,25.3c0-0.3,0.2-0.6,0.5-0.8c0.2-0.1,0.4-0.2,0.5-0.2c0.3,0,0.5,0.1,0.8,0.4c0.4,0.4,0.8,0.7,1.2,0.9c0.4,0.2,0.9,0.3,1.5,0.3c1,0,1.5-0.4,1.5-1.1c0-0.4-0.2-0.6-0.5-0.8s-0.9-0.4-1.6-0.6c-0.7-0.2-1.3-0.4-1.8-0.6s-0.9-0.5-1.2-0.9c-0.3-0.4-0.5-1-0.5-1.7c0-0.6,0.2-1.1,0.5-1.6c0.3-0.4,0.8-0.8,1.4-1s1.2-0.4,1.8-0.4s1.3,0.1,1.9,0.4c0.6,0.2,1.1,0.6,1.5,1.1c0.2,0.2,0.2,0.4,0.2,0.7c0,0.3-0.1,0.5-0.4,0.7c-0.2,0.1-0.4,0.2-0.6,0.2c-0.3,0-0.5-0.1-0.7-0.3c-0.2-0.3-0.5-0.5-0.9-0.7s-0.8-0.2-1.2-0.2c-1,0-1.4,0.3-1.4,1c0,0.3,0.1,0.5,0.3,0.7s0.4,0.3,0.7,0.4c0.3,0.1,0.7,0.2,1.1,0.3c0.7,0.2,1.2,0.4,1.7,0.6s0.8,0.5,1.2,0.9c0.3,0.4,0.5,1,0.5,1.6s-0.2,1.2-0.5,1.6c-0.4,0.5-0.8,0.8-1.4,1c-0.6,0.2-1.2,0.4-1.8,0.4c-0.8,0-1.6-0.1-2.3-0.4s-1.3-0.7-1.8-1.3C27.6,25.7,27.6,25.5,27.6,25.3z"/></g></svg></div><div class="rwm-next" id="next"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 493.5 493.5"><path class="cc2" d="M46.4 493.3c10.1 0 20.9-4.1 32.1-11.9l274.1-188.8c17.6-12.2 27.3-28.5 27.3-46.1s-9.8-33.9-27.4-46.1L78.1 11.7C66.8 4 55.6 0 45.5 0 34.8 0 26.6 4.4 20.2 13c-6.3 8.5-8.7 20.5-8.7 35v397c0 29.8 12.8 48.3 34.9 48.3zM440.4 493.5h13.2c14.9 0 28.3-12.1 28.3-27V27.1c0-14.9-13-27.1-27.9-27.1h-.5l-12.9.1c-14.9 0-28.1 12.2-28.1 27v439.4c.1 14.9 13 27 27.9 27z"/></svg></div></div></div></div></div></div></div><div id="amplitude-control-mobile" class="cc5" style="display: none;"><div id="control-container"><div class="progress-bar"><div id="time-container-mobile"><div id="progress-container"><input type="range" class="amplitude-song-slider" step=".1"/></div><span class="current-time"><span class="amplitude-current-minutes" ></span>:<span class="amplitude-current-seconds"></span></span><span class="duration cc4"><span class="amplitude-duration-minutes"></span>:<span class="amplitude-duration-seconds"></span></span></div></div><div id="central-control-container"><div id="central-controls"><div id="volume-controls"><div class="amplitude-mute amplitude-not-muted"><svg class="svg edisound_widget-container__not-muted" width="15" height="15" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 61 48.4" xml:space="preserve"><g><path class="cc2" d="M30.5,43.2c0,1.1-0.6,2-1.6,2.5c-0.4,0.2-0.8,0.3-1.2,0.3c-0.6,0-1.3-0.2-1.8-0.6L10.8,32.8H2.8C1.2,32.8,0,31.6,0,30V19c0-1.5,1.2-2.8,2.8-2.8h8.1L26,3.7c0.8-0.7,2-0.8,2.9-0.4c1,0.5,1.6,1.4,1.6,2.5L30.5,43.2L30.5,43.2zM41.1,38.9c-0.1,0-0.1,0-0.2,0c-0.7,0-1.4-0.3-2-0.8l-0.4-0.4c-1-1-1.1-2.5-0.3-3.6c2.1-2.8,3.2-6.1,3.2-9.6c0-3.7-1.2-7.2-3.6-10.1c-0.9-1.1-0.8-2.7,0.2-3.7l0.4-0.4c0.6-0.6,1.3-0.9,2.1-0.8c0.8,0,1.5,0.4,2,1c3.3,4,5,8.8,5,14c0,4.8-1.5,9.4-4.4,13.3C42.7,38.4,41.9,38.8,41.1,38.9z M52.6,47.5c-0.5,0.6-1.2,0.9-2,1c0,0-0.1,0-0.1,0c-0.7,0-1.4-0.3-2-0.8l-0.4-0.4c-1-1-1.1-2.6-0.2-3.7c4.5-5.3,6.9-12.1,6.9-19c0-7.2-2.6-14.2-7.4-19.6c-1-1.1-0.9-2.8,0.1-3.8L48,0.8C48.5,0.3,49.2,0,50,0c0.8,0,1.5,0.4,2,0.9c5.8,6.5,9,14.9,9,23.6C61,32.9,58,41.1,52.6,47.5z"/></g></svg><svg class="svg edisound_widget-container__muted" width="15" height="15" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 61 48.4" xml:space="preserve"><g><path class="cc2" d="M30.5,43.2c0,1.1-0.6,2-1.6,2.5c-0.4,0.2-0.8,0.3-1.2,0.3c-0.6,0-1.3-0.2-1.8-0.6L10.8,32.8H2.8C1.2,32.8,0,31.6,0,30V19c0-1.5,1.2-2.8,2.8-2.8h8.1L26,3.7c0.8-0.7,2-0.8,2.9-0.4c1,0.5,1.6,1.4,1.6,2.5L30.5,43.2L30.5,43.2z M36.4,15.8L36.4,15.8l8.4,8.4l-8.4,8.4c-0.7,0.7-0.7,1.8,0,2.5l1.1,1.1c0.7,0.7,1.8,0.7,2.5,0l8.4-8.4l8.4,8.4c0.7,0.7,1.8,0.7,2.5,0l1.1-1.1c0.7-0.7,0.7-1.8,0-2.5L52,24.2l8.5-8.5c0.7-0.7,0.7-1.8,0-2.5l-1.1-1.1c-0.7-0.7-1.8-0.7-2.5,0l-8.5,8.5L40,12.2c-0.7-0.7-1.8-0.7-2.5,0l-1.1,1.1C35.7,13.9,35.7,15.1,36.4,15.8z"/></g></svg></div><input type="range" class="amplitude-volume-slider"></div><div class="rwm-prev" id="previous"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 493.5 493.5"><path class="cc2" d="M447.1.2C437 .2 426.2 4.3 415 12.1L140.9 201c-17.6 12.2-27.3 28.5-27.3 46.1s9.8 33.9 27.4 46.1l274.3 188.7c11.3 7.8 22.6 11.7 32.6 11.7 10.8 0 18.9-4.4 25.3-13 6.3-8.5 8.7-20.5 8.7-35v-397C482 18.7 469.2.2 447.1.2zM53.1 0H39.9C25 0 11.6 12.1 11.6 27v439.4c0 14.9 13 27.1 27.9 27.1h.5l12.9-.1c14.9 0 28.1-12.2 28.1-27V27C81 12.1 68 0 53.1 0z"/></svg></div><div id="back" class="back"><svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"  viewBox="0 0 35.7 40.7" style="enable-background:new 0 0 35.7 40.7;" xml:space="preserve"><path class="cc2" d="M29.7,6c-3.9-3.9-9-6-14.4-6C10.5,0,5.8,1.7,2.1,4.8V1c0-0.5-0.4-1-1.1-1S0,0.5,0,1v6.8c0,0.7,0.5,0.8,1,0.8h6.9C8.5,8.6,9,8.2,9,7.5c0-0.5-0.4-1-1.1-1H3.5C6.8,3.6,11,2,15.4,2c4.9,0,9.5,1.9,12.9,5.3c3.4,3.4,5.3,8,5.3,12.9c0,4.9-1.9,9.5-5.3,12.9c-3.4,3.4-8,5.3-12.9,5.3c-4.9,0-9.5-1.9-12.9-5.3c-0.4-0.4-1.2-0.4-1.6,0c-0.4,0.4-0.4,1.2,0,1.6c3.9,3.9,9,6,14.4,6c5.4,0,10.5-2.1,14.4-6c3.9-3.9,6-9,6-14.4C35.7,14.9,33.6,9.8,29.7,6z"/><g><path class="cc2" d="M7.7,14.5C7.9,14.7,8,15,8,15.3v10.9c0,0.3-0.1,0.6-0.4,0.8c-0.2,0.2-0.5,0.3-0.9,0.3S6.1,27.2,5.8,27c-0.2-0.2-0.3-0.5-0.3-0.8v-9l-1.2,0.7c-0.1,0.2-0.3,0.3-0.5,0.3c-0.3,0-0.6-0.1-0.8-0.4S2.7,17.3,2.7,17c0-0.2,0.1-0.4,0.2-0.6C3,16.2,3.1,16.1,3.3,16l2.9-1.7c0.2-0.1,0.5-0.2,0.8-0.2C7.2,14.2,7.4,14.3,7.7,14.5z"/><path class="cc2" d="M12.5,26.7c-0.8-0.6-1.3-1.4-1.7-2.4s-0.6-2.2-0.6-3.6s0.2-2.5,0.6-3.6c0.4-1,1-1.8,1.7-2.4s1.7-0.8,2.7-0.8s2,0.3,2.7,0.8c0.8,0.6,1.3,1.4,1.7,2.4c0.4,1,0.6,2.2,0.6,3.6s-0.2,2.5-0.6,3.6s-1,1.8-1.7,2.4c-0.8,0.6-1.7,0.9-2.7,0.9S13.2,27.3,12.5,26.7z M17.1,24.2c0.5-0.8,0.7-1.9,0.7-3.4s-0.2-2.6-0.7-3.4s-1.1-1.2-1.9-1.2s-1.4,0.4-1.9,1.2c-0.5,0.8-0.7,1.9-0.7,3.4s0.2,2.6,0.7,3.4s1.1,1.2,1.9,1.2C16,25.3,16.6,24.9,17.1,24.2z"/><path class="cc2" d="M21.5,25.3c0-0.3,0.2-0.6,0.5-0.8c0.2-0.1,0.4-0.2,0.5-0.2c0.3,0,0.5,0.1,0.8,0.4c0.4,0.4,0.8,0.7,1.2,0.9c0.4,0.2,0.9,0.3,1.5,0.3c1,0,1.5-0.4,1.5-1.1c0-0.4-0.2-0.6-0.5-0.8s-0.9-0.4-1.6-0.6c-0.7-0.2-1.3-0.4-1.8-0.6s-0.9-0.5-1.2-0.9c-0.3-0.4-0.5-1-0.5-1.7c0-0.6,0.2-1.1,0.5-1.6c0.3-0.4,0.8-0.8,1.4-1s1.2-0.4,1.8-0.4s1.3,0.1,1.9,0.4c0.6,0.2,1.1,0.6,1.5,1.1c0.2,0.2,0.2,0.4,0.2,0.7c0,0.3-0.1,0.5-0.4,0.7c-0.2,0.1-0.4,0.2-0.6,0.2c-0.3,0-0.5-0.1-0.7-0.3c-0.2-0.3-0.5-0.5-0.9-0.7s-0.8-0.2-1.2-0.2c-1,0-1.4,0.3-1.4,1c0,0.3,0.1,0.5,0.3,0.7s0.4,0.3,0.7,0.4c0.3,0.1,0.7,0.2,1.1,0.3c0.7,0.2,1.2,0.4,1.7,0.6s0.8,0.5,1.2,0.9c0.3,0.4,0.5,1,0.5,1.6s-0.2,1.2-0.5,1.6c-0.4,0.5-0.8,0.8-1.4,1c-0.6,0.2-1.2,0.4-1.8,0.4c-0.8,0-1.6-0.1-2.3-0.4s-1.3-0.7-1.8-1.3C21.5,25.7,21.5,25.5,21.5,25.3z"/></g></svg></div><div id="forward" class="forward"><svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 35.7 40.7" style="enable-background:new 0 0 35.7 40.7;" xml:space="preserve"><path class="cc2" d="M35.5,0.5C35.4,0.2,35,0,34.7,0c-0.7,0-1.1,0.5-1.1,1v3.8C29.9,1.7,25.3,0,20.4,0C14.9,0,9.8,2.1,6,6c-3.9,3.9-6,9-6,14.4c0,5.4,2.1,10.5,6,14.4c3.9,3.9,9,6,14.4,6s10.5-2.1,14.4-6c0.4-0.4,0.4-1.2,0-1.6c-0.4-0.4-1.2-0.4-1.6,0c-3.4,3.4-8,5.3-12.9,5.3s-9.5-1.9-12.9-5.3C3.9,29.7,2,25.1,2,20.2c0-4.9,1.9-9.5,5.3-12.9S15.4,2,20.2,2c4.4,0,8.6,1.6,12,4.5h-4.5c-0.7,0-1,0.5-1,1c0,0.7,0.5,1.1,1,1.1h6.7c0.7,0,1-0.5,1-1.1V1.1C35.6,0.9,35.6,0.7,35.5,0.5z"/><g><path class="cc2" d="M13.9,14.5c0.2,0.2,0.3,0.5,0.3,0.8v10.9c0,0.3-0.1,0.6-0.4,0.8c-0.2,0.2-0.5,0.3-0.9,0.3S12.3,27.2,12,27c-0.2-0.2-0.3-0.5-0.3-0.8v-9l-1.2,0.7c-0.1,0.2-0.3,0.3-0.5,0.3c-0.3,0-0.6-0.1-0.8-0.4S8.8,17.3,8.8,17c0-0.2,0.1-0.4,0.2-0.6c0.1-0.2,0.2-0.3,0.4-0.4l2.9-1.7c0.2-0.1,0.5-0.2,0.8-0.2C13.4,14.2,13.6,14.3,13.9,14.5z"/><path class="cc2" d="M18.6,26.7c-0.8-0.6-1.3-1.4-1.7-2.4s-0.6-2.2-0.6-3.6s0.2-2.5,0.6-3.6c0.4-1,1-1.8,1.7-2.4s1.7-0.8,2.7-0.8s2,0.3,2.7,0.8c0.8,0.6,1.3,1.4,1.7,2.4c0.4,1,0.6,2.2,0.6,3.6s-0.2,2.5-0.6,3.6s-1,1.8-1.7,2.4c-0.8,0.6-1.7,0.9-2.7,0.9S19.4,27.3,18.6,26.7z M23.2,24.2c0.5-0.8,0.7-1.9,0.7-3.4s-0.2-2.6-0.7-3.4s-1.1-1.2-1.9-1.2s-1.4,0.4-1.9,1.2c-0.5,0.8-0.7,1.9-0.7,3.4s0.2,2.6,0.7,3.4s1.1,1.2,1.9,1.2C22.1,25.3,22.8,24.9,23.2,24.2z"/><path class="cc2" d="M27.6,25.3c0-0.3,0.2-0.6,0.5-0.8c0.2-0.1,0.4-0.2,0.5-0.2c0.3,0,0.5,0.1,0.8,0.4c0.4,0.4,0.8,0.7,1.2,0.9c0.4,0.2,0.9,0.3,1.5,0.3c1,0,1.5-0.4,1.5-1.1c0-0.4-0.2-0.6-0.5-0.8s-0.9-0.4-1.6-0.6c-0.7-0.2-1.3-0.4-1.8-0.6s-0.9-0.5-1.2-0.9c-0.3-0.4-0.5-1-0.5-1.7c0-0.6,0.2-1.1,0.5-1.6c0.3-0.4,0.8-0.8,1.4-1s1.2-0.4,1.8-0.4s1.3,0.1,1.9,0.4c0.6,0.2,1.1,0.6,1.5,1.1c0.2,0.2,0.2,0.4,0.2,0.7c0,0.3-0.1,0.5-0.4,0.7c-0.2,0.1-0.4,0.2-0.6,0.2c-0.3,0-0.5-0.1-0.7-0.3c-0.2-0.3-0.5-0.5-0.9-0.7s-0.8-0.2-1.2-0.2c-1,0-1.4,0.3-1.4,1c0,0.3,0.1,0.5,0.3,0.7s0.4,0.3,0.7,0.4c0.3,0.1,0.7,0.2,1.1,0.3c0.7,0.2,1.2,0.4,1.7,0.6s0.8,0.5,1.2,0.9c0.3,0.4,0.5,1,0.5,1.6s-0.2,1.2-0.5,1.6c-0.4,0.5-0.8,0.8-1.4,1c-0.6,0.2-1.2,0.4-1.8,0.4c-0.8,0-1.6-0.1-2.3-0.4s-1.3-0.7-1.8-1.3C27.6,25.7,27.6,25.5,27.6,25.3z"/></g></svg></div><div class="rwm-next" id="next"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 493.5 493.5"><path class="cc2" d="M46.4 493.3c10.1 0 20.9-4.1 32.1-11.9l274.1-188.8c17.6-12.2 27.3-28.5 27.3-46.1s-9.8-33.9-27.4-46.1L78.1 11.7C66.8 4 55.6 0 45.5 0 34.8 0 26.6 4.4 20.2 13c-6.3 8.5-8.7 20.5-8.7 35v397c0 29.8 12.8 48.3 34.9 48.3zM440.4 493.5h13.2c14.9 0 28.3-12.1 28.3-27V27.1c0-14.9-13-27.1-27.9-27.1h-.5l-12.9.1c-14.9 0-28.1 12.2-28.1 27v439.4c.1 14.9 13 27 27.9 27z"/></svg></div></div></div></div></div><div id="amplitude-playlist" class="amplitude-playlist cc5"><div data-amplitude-song-index="0" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused amplitude-active-song-container"><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Loïc Guézo (SEMEA) - Cybersecurité des PME</span><span class="song-duration cc3">16:33</span></div></div><div data-amplitude-song-index="1" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Claude Petrucci (PI Services) - Transformation digital…</span><span class="song-duration cc3">21:56</span></div></div><div data-amplitude-song-index="2" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 17 - Vincent Redrado (Digital Native Group) –…</span><span class="song-duration cc3">17:04</span></div></div><div data-amplitude-song-index="3" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Stephan Dixmier (Bimpli), technologie, monétique et la…</span><span class="song-duration cc3">22:38</span></div></div><div data-amplitude-song-index="4" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Olivier Binet (Karos), covoiturage, recrutement et la…</span><span class="song-duration cc3">27:10</span></div></div><div data-amplitude-song-index="5" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 13, Laurence Yvon (Tagetik), finance, business…</span><span class="song-duration cc3">18:47</span></div></div><div data-amplitude-song-index="6" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 12 - Matthieu Havy</span><span class="song-duration cc3">20:34</span></div></div><div data-amplitude-song-index="7" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 11 - Jean-Yves Grandidier (Valorem) - Energies…</span><span class="song-duration cc3">22:53</span></div></div><div data-amplitude-song-index="8" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 10 - Antoine Grimaud (PayPlug.) – PME, E-comme…</span><span class="song-duration cc3">20:21</span></div></div><div data-amplitude-song-index="9" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 9 - Matthieu Walckenaer (PlanRadar), numérisat…</span><span class="song-duration cc3">20:30</span></div></div><div data-amplitude-song-index="10" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 8 - Jean-Stéphane Arcis (Talentsoft) - RH, R&amp;D…</span><span class="song-duration cc3">19:19</span></div></div><div data-amplitude-song-index="11" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 7 - Emilie Benoit-Vernay (Shopify) - Marketing…</span><span class="song-duration cc3">18:30</span></div></div><div data-amplitude-song-index="12" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 6 - Laurent Mogno (ECT) - Buldozer, rêve améri…</span><span class="song-duration cc3">18:56</span></div></div><div data-amplitude-song-index="13" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Épisode 4 - Xavier Latil (The Blockchain Group) - Croi…</span><span class="song-duration cc3">17:37</span></div></div><div data-amplitude-song-index="14" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Épisode 3 - Marc Negroni (Nextedia) - S&#039;adapter à la c…</span><span class="song-duration cc3">18:01</span></div></div><div data-amplitude-song-index="15" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Épisode 2 - Elena Del Gaudio (Del Gaudio Gourmet) - Im…</span><span class="song-duration cc3">18:01</span></div></div><div data-amplitude-song-index="16" class="song amplitude-song-container amplitude-play-pause cc3 amplitude-paused "><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Épisode 1 - Hervé Lenglart (NetMedia Group) - Vendre s…</span><span class="song-duration cc3">17:58</span></div></div></div><div class="playlist-blur"></div></div><div id="widget-footer"><a href="https://www.edisound.com" target="_blank"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 267.12 42.62"><path d="M96.51.31c-1.13.6-1.17.84-1.17,8.23,0,3.7,0,6.74-.1,6.74a7.38,7.38,0,0,1-1.15-.82,15.32,15.32,0,0,0-9.61-3.22A14,14,0,0,0,77.18,13a12.32,12.32,0,0,0-3.78,2.88,11.62,11.62,0,0,0-2.86,3.82,13.24,13.24,0,0,0-1.63,7.14,13.2,13.2,0,0,0,.44,4.2,16,16,0,0,0,10.9,11,17.76,17.76,0,0,0,8.45,0A15.94,15.94,0,0,0,99.76,30.52c.38-1.59.4-2.37.4-15.21,0-12.19,0-13.62-.32-14.12A2.5,2.5,0,0,0,96.51.31ZM88,16.68a11,11,0,0,1,6.76,6.84,12.08,12.08,0,0,1,0,6.64A10.79,10.79,0,0,1,84.5,37.6,10.65,10.65,0,0,1,73.82,26.82a10.58,10.58,0,0,1,8.55-10.56A14.58,14.58,0,0,1,88,16.68Z" transform="translate(0.01 0)" style="fill:#283c7c"/><path d="M263.53.25a3.18,3.18,0,0,0-.91.8c-.4.54-.42.86-.52,7.38l-.1,6.8-1.17-.89A15.9,15.9,0,0,0,240,16a15.3,15.3,0,0,0-4.26,10.84,13.85,13.85,0,0,0,1.63,7,15.64,15.64,0,0,0,17.08,8.43,16.11,16.11,0,0,0,12.15-11.49c.44-1.53.44-1.93.52-15.09.06-14.95.1-14.54-1.21-15.35A2.41,2.41,0,0,0,263.53.25Zm-9.7,16.13a10.8,10.8,0,0,1,5,18.11,9.82,9.82,0,0,1-7.46,3.12,13.63,13.63,0,0,1-2.51-.22,11.27,11.27,0,0,1-8-8.07A10.78,10.78,0,0,1,253.83,16.38Z" transform="translate(0.01 0)" style="fill:#283c7c"/><path d="M106.67,2.81a3,3,0,0,0,.06,4.95,3.21,3.21,0,0,0,3,0,2.71,2.71,0,0,0,1.31-2.33,2.76,2.76,0,0,0-2.86-3A3,3,0,0,0,106.67,2.81Z" transform="translate(0.01 0)" style="fill:#283c7c"/><path d="M50.79,11.25a15,15,0,0,0-9.72,4.93,16.4,16.4,0,0,0-4.16,8l-.12.76H33.07L31.8,23.46c-1.47-1.65-1.87-1.93-2.8-1.95a1.69,1.69,0,0,0-1.63.78,40,40,0,0,0-1,4.06c-.74,3.3-1,4.26-1,3.68s-2.23-12.63-2.41-13a2.06,2.06,0,0,0-1.81-.8c-1.13,0-1.63.78-4,6.34-3.24,7.62-3.1,7.3-3.26,6.84-.08-.22-.44-1.71-.8-3.32-.68-3.12-1-3.7-2-3.92s-1.95.4-3.3,2.61l-1.23,2-2.72.1c-3.2.12-3.8.36-3.8,1.51a1.25,1.25,0,0,0,.52,1.09c.5.4.8.42,4.24.42H8.47l.6-.6c.34-.34.64-.6.66-.56s.44,1.77.91,3.88c1,4.45,1.21,4.83,2.72,4.83a1.57,1.57,0,0,0,1.37-.5,63.88,63.88,0,0,0,3.08-6.52c1.89-4.41,2.61-5.91,2.72-5.63s.76,3.82,1.49,8c1.43,8.25,1.49,8.37,2.74,8.63A2.23,2.23,0,0,0,27,40.59c.1-.26.78-3.14,1.51-6.4,1.21-5.41,1.65-7.16,1.69-6.5s1.17.86,3.92.86h2.72l.12.74A19.07,19.07,0,0,0,39,34.88a18,18,0,0,0,5,5.23,15.92,15.92,0,0,0,15.87.74c1.57-.8,4.26-3.22,4.45-4a2.57,2.57,0,0,0-2.39-3.12c-.78,0-1,.12-2.13,1.11A10.68,10.68,0,0,1,55,37.41a14.63,14.63,0,0,1-6.24-.4,12.32,12.32,0,0,1-4.16-2.88,13.82,13.82,0,0,1-2.23-4.32l-.12-.66,12.41,0L67,29.05l.58-.66c.52-.58.58-.78.58-2A15.56,15.56,0,0,0,66,18.74a23.52,23.52,0,0,0-2.49-3,11.6,11.6,0,0,0-3.86-2.84A15.52,15.52,0,0,0,50.79,11.25Zm4.28,5.13a10.84,10.84,0,0,1,7.66,6.9,9.27,9.27,0,0,1,.42,1.45c0,.14-3.44.2-10.58.2H42l.14-.66A10.78,10.78,0,0,1,55.07,16.38Z" transform="translate(0.01 0)" style="fill:#283c7c"/><path d="M123.91,11.25c-3.88.46-6.72,2.21-8.11,5a5.5,5.5,0,0,0-.64,3.34,5.49,5.49,0,0,0,.56,3.16c1.23,2.47,3.66,4.06,9.09,5.87,4.16,1.41,6.28,2.76,6.66,4.26.46,1.81-1.17,3.88-3.6,4.61a10,10,0,0,1-6.76-.74,12,12,0,0,1-1.93-1.67c-1.35-1.41-2.25-1.81-3.4-1.49-2.21.6-1.93,3.42.58,5.79a13.28,13.28,0,0,0,5.23,2.74,17.44,17.44,0,0,0,6.74.22c5.35-1.13,8.79-5.47,8-10.14A6.82,6.82,0,0,0,134,27.89c-1.53-1.43-3.12-2.19-7.72-3.76-5.29-1.77-6.16-2.41-6.16-4.53s1.37-3.12,4.26-3.52A7.81,7.81,0,0,1,131.09,18c1.13,1.05,1.61,1.23,2.39.95,2.05-.78,2.17-2.7.3-4.69a9.5,9.5,0,0,0-6.11-2.86l-1.85-.18A11.53,11.53,0,0,0,123.91,11.25Z" transform="translate(0.01 0)" style="fill:#283c7c"/><path d="M151.79,11.27a15.7,15.7,0,0,0-5,29.77,14,14,0,0,0,6,1.53,15.57,15.57,0,0,0,15.65-10.76,12,12,0,0,0,.7-4.26,12,12,0,0,0-.34-4.22,15.68,15.68,0,0,0-17-12.06Zm4.28,5.11a11.08,11.08,0,0,1,8.09,8.93,10.84,10.84,0,0,1-7.89,12,13.46,13.46,0,0,1-5.51,0,11.11,11.11,0,0,1-7.64-7.62,12.55,12.55,0,0,1,.38-6.76A10.88,10.88,0,0,1,156.07,16.38Z" transform="translate(0.01 0)" style="fill:#283c7c"/><path d="M217.54,11.27a11.94,11.94,0,0,0-4.83,1.39,14,14,0,0,0-6.76,7c-1.39,2.92-1.43,3.28-1.53,12.15s-.06,9.19,1.13,10a2.53,2.53,0,0,0,3.48-.6c.2-.32.28-2.55.36-8.89.1-8.29.12-8.47.58-9.66a9.66,9.66,0,0,1,9.78-6.48,9.51,9.51,0,0,1,8.19,6.34c.44,1.11.46,1.37.56,9.64s.12,8.49.52,9.05a2.35,2.35,0,0,0,3.66.38l.74-.68V32.24c0-8.35,0-8.65-.46-10.18C230.88,14.79,224.8,10.55,217.54,11.27Z" transform="translate(0.01 0)" style="fill:#283c7c"/><path d="M197.35,11.72a2.83,2.83,0,0,0-1.11.8c-.4.56-.42.84-.52,9s-.12,8.43-.56,9.68a9.72,9.72,0,0,1-5,5.71c-1.29.6-1.47.64-3.78.64s-2.41,0-4-.78a10.2,10.2,0,0,1-4.45-4.26c-1.21-2.27-1.27-2.8-1.27-11.3s0-8.57-1.21-9.19a2.52,2.52,0,0,0-3.64,1.49,71.59,71.59,0,0,0-.14,8.57c.08,7.22.12,8,.52,9.41A15.19,15.19,0,0,0,181.94,42a10.32,10.32,0,0,0,4.43.56c2.57,0,3,0,4.43-.56a12.18,12.18,0,0,0,5.43-3.42A13.21,13.21,0,0,0,199.77,33c.84-2.51,1-4.16,1-12.05s-.06-8.27-1-8.89A2.68,2.68,0,0,0,197.35,11.72Z" transform="translate(0.01 0)" style="fill:#283c7c"/><path d="M106.49,12.34l-.68.68v27.6l.66.72a2.4,2.4,0,0,0,2.92.6c1.29-.66,1.25-.12,1.25-15.23V13l-.68-.68a1.82,1.82,0,0,0-1.73-.68A1.86,1.86,0,0,0,106.49,12.34Z" transform="translate(0.01 0)" style="fill:#283c7c"/></svg></a></div></div>`;
+    
+    rwmpContainerEl.classList.add('_inread');
+    
+    if (displayReduced) {
+                var rwmp_reduced_htmlTemplate = `<!-- Edisound Player --><div class="player-reduced-container"><div class="control-container"><div class="rwm-prev" id="previous"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 493.5 493.5"><path class="cc2" d="M447.1.2C437 .2 426.2 4.3 415 12.1L140.9 201c-17.6 12.2-27.3 28.5-27.3 46.1s9.8 33.9 27.4 46.1l274.3 188.7c11.3 7.8 22.6 11.7 32.6 11.7 10.8 0 18.9-4.4 25.3-13 6.3-8.5 8.7-20.5 8.7-35v-397C482 18.7 469.2.2 447.1.2zM53.1 0H39.9C25 0 11.6 12.1 11.6 27v439.4c0 14.9 13 27.1 27.9 27.1h.5l12.9-.1c14.9 0 28.1-12.2 28.1-27V27C81 12.1 68 0 53.1 0z"/></svg></div><div id="back" class="back"><svg id="Calque_1" width="25" height="25" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"  viewBox="0 0 35.7 40.7" xml:space="preserve"><path class="cc2" d="M29.7,6c-3.9-3.9-9-6-14.4-6C10.5,0,5.8,1.7,2.1,4.8V1c0-0.5-0.4-1-1.1-1S0,0.5,0,1v6.8c0,0.7,0.5,0.8,1,0.8h6.9C8.5,8.6,9,8.2,9,7.5c0-0.5-0.4-1-1.1-1H3.5C6.8,3.6,11,2,15.4,2c4.9,0,9.5,1.9,12.9,5.3c3.4,3.4,5.3,8,5.3,12.9c0,4.9-1.9,9.5-5.3,12.9c-3.4,3.4-8,5.3-12.9,5.3c-4.9,0-9.5-1.9-12.9-5.3c-0.4-0.4-1.2-0.4-1.6,0c-0.4,0.4-0.4,1.2,0,1.6c3.9,3.9,9,6,14.4,6c5.4,0,10.5-2.1,14.4-6c3.9-3.9,6-9,6-14.4C35.7,14.9,33.6,9.8,29.7,6z"/><g><path class="cc2" d="M7.7,14.5C7.9,14.7,8,15,8,15.3v10.9c0,0.3-0.1,0.6-0.4,0.8c-0.2,0.2-0.5,0.3-0.9,0.3S6.1,27.2,5.8,27c-0.2-0.2-0.3-0.5-0.3-0.8v-9l-1.2,0.7c-0.1,0.2-0.3,0.3-0.5,0.3c-0.3,0-0.6-0.1-0.8-0.4S2.7,17.3,2.7,17c0-0.2,0.1-0.4,0.2-0.6C3,16.2,3.1,16.1,3.3,16l2.9-1.7c0.2-0.1,0.5-0.2,0.8-0.2C7.2,14.2,7.4,14.3,7.7,14.5z"/><path class="cc2" d="M12.5,26.7c-0.8-0.6-1.3-1.4-1.7-2.4s-0.6-2.2-0.6-3.6s0.2-2.5,0.6-3.6c0.4-1,1-1.8,1.7-2.4s1.7-0.8,2.7-0.8s2,0.3,2.7,0.8c0.8,0.6,1.3,1.4,1.7,2.4c0.4,1,0.6,2.2,0.6,3.6s-0.2,2.5-0.6,3.6s-1,1.8-1.7,2.4c-0.8,0.6-1.7,0.9-2.7,0.9S13.2,27.3,12.5,26.7z M17.1,24.2c0.5-0.8,0.7-1.9,0.7-3.4s-0.2-2.6-0.7-3.4s-1.1-1.2-1.9-1.2s-1.4,0.4-1.9,1.2c-0.5,0.8-0.7,1.9-0.7,3.4s0.2,2.6,0.7,3.4s1.1,1.2,1.9,1.2C16,25.3,16.6,24.9,17.1,24.2z"/><path class="cc2" d="M21.5,25.3c0-0.3,0.2-0.6,0.5-0.8c0.2-0.1,0.4-0.2,0.5-0.2c0.3,0,0.5,0.1,0.8,0.4c0.4,0.4,0.8,0.7,1.2,0.9c0.4,0.2,0.9,0.3,1.5,0.3c1,0,1.5-0.4,1.5-1.1c0-0.4-0.2-0.6-0.5-0.8s-0.9-0.4-1.6-0.6c-0.7-0.2-1.3-0.4-1.8-0.6s-0.9-0.5-1.2-0.9c-0.3-0.4-0.5-1-0.5-1.7c0-0.6,0.2-1.1,0.5-1.6c0.3-0.4,0.8-0.8,1.4-1s1.2-0.4,1.8-0.4s1.3,0.1,1.9,0.4c0.6,0.2,1.1,0.6,1.5,1.1c0.2,0.2,0.2,0.4,0.2,0.7c0,0.3-0.1,0.5-0.4,0.7c-0.2,0.1-0.4,0.2-0.6,0.2c-0.3,0-0.5-0.1-0.7-0.3c-0.2-0.3-0.5-0.5-0.9-0.7s-0.8-0.2-1.2-0.2c-1,0-1.4,0.3-1.4,1c0,0.3,0.1,0.5,0.3,0.7s0.4,0.3,0.7,0.4c0.3,0.1,0.7,0.2,1.1,0.3c0.7,0.2,1.2,0.4,1.7,0.6s0.8,0.5,1.2,0.9c0.3,0.4,0.5,1,0.5,1.6s-0.2,1.2-0.5,1.6c-0.4,0.5-0.8,0.8-1.4,1c-0.6,0.2-1.2,0.4-1.8,0.4c-0.8,0-1.6-0.1-2.3-0.4s-1.3-0.7-1.8-1.3C21.5,25.7,21.5,25.5,21.5,25.3z"/></g></svg></div><div class="amplitude-play-pause" id="play-pause"><svg class="svg edisound_widget-container__play" width="40" height="40" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="40" height="40" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div id="forward" class="forward"><svg id="Calque_1" width="25" height="25" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 35.7 40.7" xml:space="preserve"><path class="cc2" d="M35.5,0.5C35.4,0.2,35,0,34.7,0c-0.7,0-1.1,0.5-1.1,1v3.8C29.9,1.7,25.3,0,20.4,0C14.9,0,9.8,2.1,6,6c-3.9,3.9-6,9-6,14.4c0,5.4,2.1,10.5,6,14.4c3.9,3.9,9,6,14.4,6s10.5-2.1,14.4-6c0.4-0.4,0.4-1.2,0-1.6c-0.4-0.4-1.2-0.4-1.6,0c-3.4,3.4-8,5.3-12.9,5.3s-9.5-1.9-12.9-5.3C3.9,29.7,2,25.1,2,20.2c0-4.9,1.9-9.5,5.3-12.9S15.4,2,20.2,2c4.4,0,8.6,1.6,12,4.5h-4.5c-0.7,0-1,0.5-1,1c0,0.7,0.5,1.1,1,1.1h6.7c0.7,0,1-0.5,1-1.1V1.1C35.6,0.9,35.6,0.7,35.5,0.5z"/><g><path class="cc2" d="M13.9,14.5c0.2,0.2,0.3,0.5,0.3,0.8v10.9c0,0.3-0.1,0.6-0.4,0.8c-0.2,0.2-0.5,0.3-0.9,0.3S12.3,27.2,12,27c-0.2-0.2-0.3-0.5-0.3-0.8v-9l-1.2,0.7c-0.1,0.2-0.3,0.3-0.5,0.3c-0.3,0-0.6-0.1-0.8-0.4S8.8,17.3,8.8,17c0-0.2,0.1-0.4,0.2-0.6c0.1-0.2,0.2-0.3,0.4-0.4l2.9-1.7c0.2-0.1,0.5-0.2,0.8-0.2C13.4,14.2,13.6,14.3,13.9,14.5z"/><path class="cc2" d="M18.6,26.7c-0.8-0.6-1.3-1.4-1.7-2.4s-0.6-2.2-0.6-3.6s0.2-2.5,0.6-3.6c0.4-1,1-1.8,1.7-2.4s1.7-0.8,2.7-0.8s2,0.3,2.7,0.8c0.8,0.6,1.3,1.4,1.7,2.4c0.4,1,0.6,2.2,0.6,3.6s-0.2,2.5-0.6,3.6s-1,1.8-1.7,2.4c-0.8,0.6-1.7,0.9-2.7,0.9S19.4,27.3,18.6,26.7z M23.2,24.2c0.5-0.8,0.7-1.9,0.7-3.4s-0.2-2.6-0.7-3.4s-1.1-1.2-1.9-1.2s-1.4,0.4-1.9,1.2c-0.5,0.8-0.7,1.9-0.7,3.4s0.2,2.6,0.7,3.4s1.1,1.2,1.9,1.2C22.1,25.3,22.8,24.9,23.2,24.2z"/><path class="cc2" d="M27.6,25.3c0-0.3,0.2-0.6,0.5-0.8c0.2-0.1,0.4-0.2,0.5-0.2c0.3,0,0.5,0.1,0.8,0.4c0.4,0.4,0.8,0.7,1.2,0.9c0.4,0.2,0.9,0.3,1.5,0.3c1,0,1.5-0.4,1.5-1.1c0-0.4-0.2-0.6-0.5-0.8s-0.9-0.4-1.6-0.6c-0.7-0.2-1.3-0.4-1.8-0.6s-0.9-0.5-1.2-0.9c-0.3-0.4-0.5-1-0.5-1.7c0-0.6,0.2-1.1,0.5-1.6c0.3-0.4,0.8-0.8,1.4-1s1.2-0.4,1.8-0.4s1.3,0.1,1.9,0.4c0.6,0.2,1.1,0.6,1.5,1.1c0.2,0.2,0.2,0.4,0.2,0.7c0,0.3-0.1,0.5-0.4,0.7c-0.2,0.1-0.4,0.2-0.6,0.2c-0.3,0-0.5-0.1-0.7-0.3c-0.2-0.3-0.5-0.5-0.9-0.7s-0.8-0.2-1.2-0.2c-1,0-1.4,0.3-1.4,1c0,0.3,0.1,0.5,0.3,0.7s0.4,0.3,0.7,0.4c0.3,0.1,0.7,0.2,1.1,0.3c0.7,0.2,1.2,0.4,1.7,0.6s0.8,0.5,1.2,0.9c0.3,0.4,0.5,1,0.5,1.6s-0.2,1.2-0.5,1.6c-0.4,0.5-0.8,0.8-1.4,1c-0.6,0.2-1.2,0.4-1.8,0.4c-0.8,0-1.6-0.1-2.3-0.4s-1.3-0.7-1.8-1.3C27.6,25.7,27.6,25.5,27.6,25.3z"/></g></svg></div><div class="rwm-next" id="next"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 493.5 493.5"><path class="cc2" d="M46.4 493.3c10.1 0 20.9-4.1 32.1-11.9l274.1-188.8c17.6-12.2 27.3-28.5 27.3-46.1s-9.8-33.9-27.4-46.1L78.1 11.7C66.8 4 55.6 0 45.5 0 34.8 0 26.6 4.4 20.2 13c-6.3 8.5-8.7 20.5-8.7 35v397c0 29.8 12.8 48.3 34.9 48.3zM440.4 493.5h13.2c14.9 0 28.3-12.1 28.3-27V27.1c0-14.9-13-27.1-27.9-27.1h-.5l-12.9.1c-14.9 0-28.1 12.2-28.1 27v439.4c.1 14.9 13 27 27.9 27z"/></svg></div></div><div class="meta-image amplitude-play-pause"><img data-amplitude-song-info="cover_art_url"/></div><div class="meta-container"><div class="meta-text"><span data-amplitude-song-info="name" class="song-name cc4 subscribe" style="cursor: pointer;"></span></div><div class="time-container"><div class="current-time"><div><span class="amplitude-current-minutes"></span>:<span class="amplitude-current-seconds"></span></div></div><div id="progress-container"><input type="range" class="amplitude-song-slider"/></div><div class="duration"><div><span class="amplitude-duration-minutes"></span>:<span class="amplitude-duration-seconds"></span></div></div></div></div><div class="extras-container"><div id="volume-container"><div id="volume-controls"><div class="amplitude-mute amplitude-not-muted"><svg class="svg edisound_widget-container__not-muted" height="20px" width="20px" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 61 48.4" xml:space="preserve"><g><path class="cc3" d="M30.5,43.2c0,1.1-0.6,2-1.6,2.5c-0.4,0.2-0.8,0.3-1.2,0.3c-0.6,0-1.3-0.2-1.8-0.6L10.8,32.8H2.8C1.2,32.8,0,31.6,0,30V19c0-1.5,1.2-2.8,2.8-2.8h8.1L26,3.7c0.8-0.7,2-0.8,2.9-0.4c1,0.5,1.6,1.4,1.6,2.5L30.5,43.2L30.5,43.2zM41.1,38.9c-0.1,0-0.1,0-0.2,0c-0.7,0-1.4-0.3-2-0.8l-0.4-0.4c-1-1-1.1-2.5-0.3-3.6c2.1-2.8,3.2-6.1,3.2-9.6c0-3.7-1.2-7.2-3.6-10.1c-0.9-1.1-0.8-2.7,0.2-3.7l0.4-0.4c0.6-0.6,1.3-0.9,2.1-0.8c0.8,0,1.5,0.4,2,1c3.3,4,5,8.8,5,14c0,4.8-1.5,9.4-4.4,13.3C42.7,38.4,41.9,38.8,41.1,38.9z M52.6,47.5c-0.5,0.6-1.2,0.9-2,1c0,0-0.1,0-0.1,0c-0.7,0-1.4-0.3-2-0.8l-0.4-0.4c-1-1-1.1-2.6-0.2-3.7c4.5-5.3,6.9-12.1,6.9-19c0-7.2-2.6-14.2-7.4-19.6c-1-1.1-0.9-2.8,0.1-3.8L48,0.8C48.5,0.3,49.2,0,50,0c0.8,0,1.5,0.4,2,0.9c5.8,6.5,9,14.9,9,23.6C61,32.9,58,41.1,52.6,47.5z"/></g></svg><svg class="svg edisound_widget-container__muted" height="20px" width="20px" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 61 48.4" xml:space="preserve"><g><path class="cc3" d="M30.5,43.2c0,1.1-0.6,2-1.6,2.5c-0.4,0.2-0.8,0.3-1.2,0.3c-0.6,0-1.3-0.2-1.8-0.6L10.8,32.8H2.8C1.2,32.8,0,31.6,0,30V19c0-1.5,1.2-2.8,2.8-2.8h8.1L26,3.7c0.8-0.7,2-0.8,2.9-0.4c1,0.5,1.6,1.4,1.6,2.5L30.5,43.2L30.5,43.2z M36.4,15.8L36.4,15.8l8.4,8.4l-8.4,8.4c-0.7,0.7-0.7,1.8,0,2.5l1.1,1.1c0.7,0.7,1.8,0.7,2.5,0l8.4-8.4l8.4,8.4c0.7,0.7,1.8,0.7,2.5,0l1.1-1.1c0.7-0.7,0.7-1.8,0-2.5L52,24.2l8.5-8.5c0.7-0.7,0.7-1.8,0-2.5l-1.1-1.1c-0.7-0.7-1.8-0.7-2.5,0l-8.5,8.5L40,12.2c-0.7-0.7-1.8-0.7-2.5,0l-1.1,1.1C35.7,13.9,35.7,15.1,36.4,15.8z"/></g></svg></div><input type="range" class="amplitude-volume-slider"></div></div><div class="extras-buttons button-playlist"><svg viewBox="0 0 512 512" xml:space="preserve" xmlns="http://www.w3.org/2000/svg"><path class="extras-button" d="m448 0h-384c-35.285 0-64 28.715-64 64v384c0 35.285 28.715 64 64 64h384c35.285 0 64-28.715 64-64v-384c0-35.285-28.715-64-64-64zm21.333 448c0 11.776-9.579 21.333-21.333 21.333h-384c-11.755 0-21.333-9.557-21.333-21.333v-384c0-11.755 9.579-21.333 21.333-21.333h384c11.755 0 21.333 9.579 21.333 21.333v384z"/><path class="extras-button" d="m147.63 119.89c-1.067-2.773-2.56-4.907-4.48-7.04-1.067-0.853-2.133-1.707-3.2-2.56-1.28-0.853-2.56-1.493-3.84-1.92-1.28-0.64-2.56-1.067-3.84-1.28-4.267-0.853-8.533-0.427-12.373 1.28-2.56 1.067-4.907 2.56-7.04 4.48-1.92 2.133-3.413 4.267-4.48 7.04-1.067 2.56-1.707 5.333-1.707 8.107s0.64 5.547 1.707 8.107c1.067 2.773 2.56 4.907 4.48 7.04 4.053 3.84 9.6 6.187 15.147 6.187 1.28 0 2.773-0.213 4.267-0.427 1.28-0.213 2.56-0.64 3.84-1.28 1.28-0.427 2.56-1.067 3.84-1.92 1.067-0.853 2.133-1.707 3.2-2.56 3.84-4.053 6.187-9.6 6.187-15.147-2e-3 -2.773-0.642-5.547-1.708-8.107z"/><path class="extras-button" d="m384 106.67h-170.67c-11.776 0-21.333 9.557-21.333 21.333s9.557 21.333 21.333 21.333h170.67c11.776 0 21.333-9.557 21.333-21.333s-9.557-21.333-21.333-21.333z"/><path class="extras-button" d="m148.91 251.73c-0.213-1.28-0.64-2.56-1.28-3.84-0.427-1.28-1.067-2.56-1.92-3.84-0.853-1.067-1.707-2.133-2.56-3.2-2.133-1.92-4.48-3.413-7.04-4.48-5.12-2.133-11.093-2.133-16.213 0-2.56 1.067-4.907 2.56-7.04 4.48-0.853 1.067-1.707 2.133-2.56 3.2-0.853 1.28-1.493 2.56-1.92 3.84-0.64 1.28-1.067 2.56-1.28 3.84-0.213 1.493-0.427 2.987-0.427 4.267 0 5.547 2.347 11.093 6.187 15.147 4.053 3.84 9.6 6.187 15.147 6.187s11.093-2.347 15.147-6.187c3.84-4.053 6.187-9.6 6.187-15.147-2e-3 -1.28-0.215-2.773-0.428-4.267z"/><path class="extras-button" d="m384 234.67h-170.67c-11.776 0-21.333 9.557-21.333 21.333s9.557 21.333 21.333 21.333h170.67c11.776 0 21.333-9.557 21.333-21.333s-9.557-21.333-21.333-21.333z"/><path class="extras-button" d="m147.63 375.89c-1.067-2.773-2.56-4.907-4.48-7.04-5.973-5.781-15.36-7.68-23.253-4.48-2.56 1.067-4.907 2.56-7.04 4.48-1.92 2.133-3.413 4.48-4.48 7.04s-1.707 5.333-1.707 8.107c0 5.76 2.133 11.093 6.187 15.147 4.053 4.032 9.387 6.187 15.147 6.187s11.093-2.155 15.147-6.187c4.053-4.053 6.187-9.387 6.187-15.147-2e-3 -2.773-0.428-5.547-1.708-8.107z"/><path class="extras-button" d="m384 362.67h-170.67c-11.776 0-21.333 9.536-21.333 21.333s9.557 21.333 21.333 21.333h170.67c11.776 0 21.333-9.536 21.333-21.333s-9.557-21.333-21.333-21.333z"/></svg><div id="amplitude-playlist" class="amplitude-playlist extras-playlist cc5"><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="0" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Loïc Guézo (SEMEA) - Cybersecurité des PME</span><span class="song-duration cc3">16:33</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="1" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Claude Petrucci (PI Services) - Transformation digital…</span><span class="song-duration cc3">21:56</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="2" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 17 - Vincent Redrado (Digital Native Group) –…</span><span class="song-duration cc3">17:04</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="3" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Stephan Dixmier (Bimpli), technologie, monétique et la…</span><span class="song-duration cc3">22:38</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="4" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Olivier Binet (Karos), covoiturage, recrutement et la…</span><span class="song-duration cc3">27:10</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="5" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 13, Laurence Yvon (Tagetik), finance, business…</span><span class="song-duration cc3">18:47</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="6" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 12 - Matthieu Havy</span><span class="song-duration cc3">20:34</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="7" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 11 - Jean-Yves Grandidier (Valorem) - Energies…</span><span class="song-duration cc3">22:53</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="8" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 10 - Antoine Grimaud (PayPlug.) – PME, E-comme…</span><span class="song-duration cc3">20:21</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="9" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 9 - Matthieu Walckenaer (PlanRadar), numérisat…</span><span class="song-duration cc3">20:30</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="10" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 8 - Jean-Stéphane Arcis (Talentsoft) - RH, R&amp;D…</span><span class="song-duration cc3">19:19</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="11" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 7 - Emilie Benoit-Vernay (Shopify) - Marketing…</span><span class="song-duration cc3">18:30</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="12" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Episode 6 - Laurent Mogno (ECT) - Buldozer, rêve améri…</span><span class="song-duration cc3">18:56</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="13" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Épisode 4 - Xavier Latil (The Blockchain Group) - Croi…</span><span class="song-duration cc3">17:37</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="14" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Épisode 3 - Marc Negroni (Nextedia) - S&#039;adapter à la c…</span><span class="song-duration cc3">18:01</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="15" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Épisode 2 - Elena Del Gaudio (Del Gaudio Gourmet) - Im…</span><span class="song-duration cc3">18:01</span></div></div><div class="song amplitude-song-container amplitude-play-pause cc3" data-amplitude-song-index="16" ><div class="song-now-playing-icon-container cbc3"><svg class="svg edisound_widget-container__play" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><path class="cc5" d="M43.625 29.803L23.646 17.426C22.189 16.474 21 17.173 21 18.988V43.01c0 1.812 1.188 2.518 2.646 1.562l19.979-12.375s.711-.5.711-1.197c0-.7-.711-1.198-.711-1.198z" fill="#888" fill-rule="evenodd"/></svg><svg class="svg edisound_widget-container__pause" width="32" height="32" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd"><path class="cc5" d="M40.587 16.61h-4.33a2.19 2.19 0 00-2.188 2.201v23.592c0 1.221.979 2.207 2.188 2.207h4.33a2.193 2.193 0 002.188-2.207V18.811a2.186 2.186 0 00-2.188-2.201zM24.2 16.61h-4.328c-1.211 0-2.193.98-2.193 2.201v23.592c0 1.221.982 2.207 2.193 2.207H24.2a2.195 2.195 0 002.188-2.207V18.811A2.193 2.193 0 0024.2 16.61z" fill="#05308C"/></g></svg></div><div class="song-meta-data"><span class="song-title">Épisode 1 - Hervé Lenglart (NetMedia Group) - Vendre s…</span><span class="song-duration cc3">17:58</span></div></div></div></div><div class="extras-buttons amplitude-actions"><svg viewBox="0 0 512 512" xml:space="preserve" xmlns="http://www.w3.org/2000/svg"><circle class="extras-button" cx="256" cy="256" r="64"/><circle class="extras-button" cx="256" cy="448" r="64"/><circle class="extras-button" cx="256" cy="64" r="64"/></svg><div class="extras-actions"><div class="subscribe"><svg xmlns="http://www.w3.org/2000/svg" width="25px" height="25px" viewBox="0 0 569.687 510.645"><path class="cc3" d="M151.335,0c81.955,0,105.071,58.84,134.491,77.753C313.145,58.84,336.26,0,420.317,0c81.955,0,147.1,67.245,149.2,151.3,6.3,121.882-203.838,306.808-283.692,359.343C203.871,458.11-4.17,273.185.033,151.3,4.236,67.245,67.278,0,151.335,0Z" transform="translate(0.03 0)" fill-rule="evenodd"/></svg>
+                S'abonner
+             </div><div class="share rwmp-share"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 290.313 272.153" width="25px" height="25px"><path class="cc3" d="M286.927,2A9.153,9.153,0,0,0,277.873.635L5.7,109.5a9.066,9.066,0,0,0-.417,16.657l85.444,39.447L281.247,9.054l-154.231,173.3v89.8l64.378-60.077,49.753,22.953a9.37,9.37,0,0,0,3.81.835,9.088,9.088,0,0,0,8.945-7.585l36.29-217.738A9.083,9.083,0,0,0,286.927,2Z" transform="translate(0 -0.001)"/></svg>
+               Partager
+            </div><div class="download"><svg id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="25px" height="25px" viewBox="0 0 512 512" xml:space="preserve"><path class="cc3" d="M382.6,233.4c-2.6-5.7-8.3-9.4-14.6-9.4h-64V16c0-8.8-7.2-16-16-16h-64c-8.8,0-16,7.2-16,16v208h-64c-6.3,0-12,3.7-14.6,9.4c-2.6,5.7-1.6,12.4,2.5,17.2l112,128c3,3.5,7.4,5.5,12,5.5s9-2,12-5.5l112-128C384.2,245.8,385.2,239.1,382.6,233.4z"/><path class="cc3" d="M432,374.3v51.3c0,12.3-10,22.3-22.3,22.3H102.3C90,448,80,438,80,425.7v-51.3C80,362,70,352,57.7,352H38.3C26,352,16,362,16,374.3V480c0,17.7,14.3,32,32,32h393.7c30,0,54.3-24.3,54.3-54.3v-83.3c0-12.3-10-22.3-22.3-22.3h-19.3C442,352,432,362,432,374.3z"/></svg>
+               Télécharger
+            </div></div></div><div class="extras-buttons amplitude-expand"><svg class="button-reduce" viewBox="0 0 25.941 25.941" xml:space="preserve" xmlns="http://www.w3.org/2000/svg"><path class="extras-button" d="m10.632 11.049-6.527-0.617s-0.869 0.023-0.385-0.461c0.488-0.486 1.664-1.664 1.664-1.664s-0.287-0.286-0.724-0.727l-4.471-4.471s-0.322-0.188 0.064-0.57c0.385-0.389 2.067-2.072 2.342-2.344 0.271-0.275 0.479-0.053 0.479-0.053 0.904 0.9 3.27 3.264 4.482 4.479 0.395 0.394 0.652 0.652 0.652 0.652s0.943-0.945 1.539-1.539c0.592-0.592 0.588 0.301 0.588 0.301s0.826 5.848 0.826 6.547c1e-3 0.51-0.529 0.467-0.529 0.467z"/><path class="extras-button" d="m15.371 14.904 6.525 0.617s0.871-0.025 0.387 0.459c-0.486 0.486-1.666 1.67-1.666 1.67s0.285 0.281 0.727 0.723c1.258 1.256 3.541 3.541 4.473 4.475 0 0 0.318 0.182-0.064 0.564-0.385 0.387-2.07 2.074-2.348 2.348-0.27 0.271-0.475 0.055-0.475 0.055-0.904-0.906-3.27-3.268-4.484-4.482-0.393-0.393-0.646-0.648-0.646-0.648s-0.945 0.941-1.543 1.535c-0.592 0.594-0.592-0.299-0.592-0.299s-0.82-5.852-0.82-6.547c-2e-3 -0.511 0.526-0.47 0.526-0.47z"/><path class="extras-button" d="m10.994 15.338-0.615 6.529s0.025 0.873-0.461 0.385c-0.488-0.49-1.668-1.666-1.668-1.666s-0.287 0.287-0.721 0.727c-1.258 1.258-3.547 3.541-4.477 4.475 0 0-0.186 0.314-0.57-0.068s-2.066-2.072-2.344-2.34c-0.275-0.273-0.055-0.482-0.055-0.482 0.904-0.9 3.266-3.268 4.482-4.482 0.395-0.393 0.652-0.65 0.652-0.65s-0.943-0.945-1.539-1.535c-0.596-0.596 0.297-0.592 0.297-0.592s5.852-0.822 6.553-0.822c0.509-3e-3 0.466 0.521 0.466 0.521z"/><path class="extras-button" d="m14.849 10.601 0.615-6.531s-0.023-0.867 0.461-0.383c0.488 0.488 1.666 1.668 1.666 1.668s0.287-0.287 0.729-0.727c1.256-1.258 3.539-3.541 4.471-4.471 0 0 0.186-0.32 0.57 0.066 0.385 0.381 2.068 2.066 2.342 2.338 0.277 0.275 0.057 0.482 0.057 0.482-0.902 0.904-3.268 3.268-4.48 4.482-0.396 0.391-0.656 0.648-0.656 0.648s0.947 0.943 1.541 1.537c0.592 0.598-0.297 0.592-0.297 0.592s-5.852 0.824-6.553 0.824c-0.507 3e-3 -0.466-0.525-0.466-0.525z"/></svg><?xml version="1.0" encoding="UTF-8"?><svg class="button-expand" viewBox="0 0 512 512" xml:space="preserve" xmlns="http://www.w3.org/2000/svg"><path class="extras-button" d="m236.45 172.81-104.03-104.02 43.184-43.184c9.409-9.408 2.76-25.605-10.605-25.605h-150c-8.291 0-15 6.709-15 15v150c0 13.241 16.066 20.112 25.606 10.606l43.198-43.169 104 104.02c5.856 5.856 15.351 5.859 21.209 1e-3l42.437-42.437c5.832-5.832 5.88-15.331 0-21.211z"/><path class="extras-button" d="m497 0h-150c-13.361 0-20.018 16.193-10.606 25.605l43.184 43.184-104.03 104c-5.844 5.844-5.868 15.358 0 21.226l42.437 42.437c5.86 5.86 15.352 5.859 21.211 0l104.02-104.03 43.184 43.184c9.535 9.536 25.605 2.625 25.605-10.605v-150c0-8.291-6.709-15-15-15z"/><path class="extras-button" d="m486.4 336.39-43.184 43.184-104.02-104.03c-5.856-5.856-15.349-5.862-21.211 0l-42.437 42.437c-5.868 5.868-5.844 15.382 0 21.226l104.03 104-43.184 43.184c-9.409 9.408-2.76 25.605 10.605 25.605h150c8.291 0 15-6.709 15-15v-150c0-13.361-16.193-20.018-25.604-10.607z"/><path class="extras-button" d="m236.46 317.98-42.437-42.437c-5.625-5.625-15.586-5.625-21.211 0l-104.02 104.03-43.184-43.184c-9.322-9.355-25.605-2.832-25.605 10.605v150c0 8.291 6.709 15 15 15h150c13.361 0 20.018-16.193 10.606-25.605l-43.184-43.184 104.03-104.02c5.88-5.88 5.833-15.378 0-21.211z"/></svg></div></div></div><!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-N48L8TN" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+`;
+            }
+
+    /* pr bug css*/
+
+    //var rwmp_iOS = !!rwmp_ua.match(/iPad/i) || !!rwmp_ua.match(/iPhone/i) || !!rwmp_ua.match(/Mac OS/i);
+    var rwmp_iOS = !!rwmp_ua.match(/iPad/i) || !!rwmp_ua.match(/iPhone/i);
+    var rwmp_webkit = !!rwmp_ua.match(/WebKit/i);
+    var rwmp_safari = !!rwmp_ua.match(/Safari/i);
+    var rwmp_CriOS = !!rwmp_ua.match(/CriOS/i);
+    var rwmp_iOSSafari = rwmp_iOS && rwmp_webkit && rwmp_safari && !rwmp_CriOS;
+    if(rwmpContainerEl) {
+        if(rwmp_iOS){ rwmpContainerEl.classList.add('ios'); }
+        if(rwmp_webkit){ rwmpContainerEl.classList.add('webkit'); }
+        if(rwmp_safari){ rwmpContainerEl.classList.add('safari'); }
+    }
+
+        const urlSearchParams = new URLSearchParams(window.location.search);
+
+    if (urlSearchParams.has('edisound_preroll_preview')) {
+        rwmpVars.globalVast = 'https\u003A\/\/publishers.edisound.com\/api\/p\/medias\/vast/0/force_preview/' + urlSearchParams.get('edisound_preroll_preview');
+        rwmpLoadPlayer([]);
+    }
+        else {
+        fetch('https\u003A\/\/publishers.edisound.com\/api\/p\/medias\/fetch', {
+            method: "POST",
+            referrerPolicy: "no-referrer-when-downgrade",
+            body: JSON.stringify({uuid: '1ec19f46\u002Dce07\u002D6960\u002Db77e\u002D5fa87749e5b3', user_id: readCookies('_edisound_player'), gdpr_consent: consentString, force_program: urlSearchParams.get('edisound_program_preview'), isFront: false }),
+            headers: new Headers({"Content-Type": "text/plain"})
+        })
+            .then(res => res.json())
+            .then((data) => {
+                if (data.hasOwnProperty('user_id') && data.user_id != null && readCookies('_edisound_player') == null) {
+                    setCookie('_edisound_player', data.user_id, 365);
+                }
+                else if (readCookies('_edisound_player')) {
+                    setCookie('_edisound_player', readCookies('_edisound_player'), 365);
+                }
+                if (data.hasOwnProperty('yknytmzg') && data.yknytmzg === 1) {
+                    rwmpVars.yknytmzg = true;
+                }
+                if (data.hasOwnProperty('retargetingImpression') && Object.keys(data.retargetingImpression).length !== 0) {
+                    rwmpVars.retargetingImpression = data.retargetingImpression;
+
+                    var pxRetargetingImpression = document.createElement("img");
+                    pxRetargetingImpression.src = rwmpVars.retargetingImpression.src;
+                    pxRetargetingImpression.width = rwmpVars.retargetingImpression.width;
+                    pxRetargetingImpression.height = rwmpVars.retargetingImpression.height;
+                    document.body.appendChild(pxRetargetingImpression);
+                    rwmpVars.retargetingImpression = null;
+                }
+                if (data.hasOwnProperty('retargetingClick') && Object.keys(data.retargetingClick).length !== 0) {
+                    rwmpVars.retargetingClick = data.retargetingClick;
+                }
+                if(!(Object.keys(data).length !== 0  && data.hasOwnProperty('medias')  && Object.keys(data.medias).length !== 0)) {
+                    // Pas de médias, cherchons un VAST
+                    if (data.hasOwnProperty('activity_id') && data.activity_id != '') {
+                        rwmpVars.globalVast = 'https\u003A\/\/publishers.edisound.com\/api\/p\/medias\/vast/'+data.activity_id;
+                    }
+                    console.log('Missing sponsorized songs');
+                    data = {"medias":[]};
+                }
+                rwmpLoadPlayer(data.medias);
+            })
+            .catch(
+                (err) => {
+                    console.log('Fetch https\u003A\/\/publishers.edisound.com\/api\/p\/medias\/fetch error : ', err);
+                    console.log('An error occured. Your podcast will be displayed anyway');
+                    rwmpLoadPlayer([]);
+                }
+            );
+    }
+        
+// End: isolation du code
+})(this, this.rwmpVars);
+
+function setCookie(name,value,days) {
+    var expires = "";
+    if (days) {
+        var date = new Date();
+        date.setTime(date.getTime() + (days*24*60*60*1000));
+        expires = "; expires=" + date.toUTCString();
+    }
+    document.cookie = name + "=" + (value || "")  + expires + "; path=/;SameSite=None;Secure;domain=."+getDomainName(window.location.hostname);
+}
+function readCookies(name) {
+    var nameEQ = name + "=";
+    var ca = document.cookie.split(';');
+    for(var i=0;i < ca.length;i++) {
+        var c = ca[i];
+        while (c.charAt(0)===' ') c = c.substring(1,c.length);
+        if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length,c.length);
+    }
+    return null;
+}
+function eraseCookie(name) {
+    document.cookie = name +'=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+}
+
+function getDomainName(hostName)
+{
+    return hostName.substring(hostName.lastIndexOf(".", hostName.lastIndexOf(".") - 1) + 1);
+}
+
+function updatenotification() {
+    if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+            title: Amplitude.getActiveSongMetadata().name,
+            artist: Amplitude.getActiveSongMetadata().artist,
+            artwork: [
+                { src: Amplitude.getActiveSongMetadata().cover_art_url, sizes: '96x96', type: 'image/jpeg' },
+                { src: Amplitude.getActiveSongMetadata().cover_art_url, sizes: '128x128', type: 'image/jpeg' },
+                { src: Amplitude.getActiveSongMetadata().cover_art_url, sizes: '192x192', type: 'image/jpeg' },
+                { src: Amplitude.getActiveSongMetadata().cover_art_url, sizes: '256x256', type: 'image/jpeg' },
+                { src: Amplitude.getActiveSongMetadata().cover_art_url, sizes: '384x384', type: 'image/jpeg' },
+                { src: Amplitude.getActiveSongMetadata().cover_art_url, sizes: '512x512', type: 'image/jpeg' },
+            ] });
+
+        navigator.mediaSession.setActionHandler('play', function () { Amplitude.play() });
+        navigator.mediaSession.setActionHandler('pause', function () { Amplitude.pause() });
+        navigator.mediaSession.setActionHandler('previoustrack', function () { Amplitude.prev() });
+        navigator.mediaSession.setActionHandler('nexttrack', function () { Amplitude.next() });
+    }
+}
+
+function isMobile(a) {
+    if(/(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows ce|xda|xiino/i.test(a)||/1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i.test(a.substr(0,4))){return true;}else{return false;}
+};
+
